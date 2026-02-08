@@ -30,10 +30,16 @@ make build
 
 ## Use As A Library
 
-Chrono now exposes public Go packages for embedding limiters in other projects:
+Chrono now exposes public Go packages for embedding core features in other projects:
 
+- `github.com/SmitUplenchwar2687/Chrono/pkg/cli`
 - `github.com/SmitUplenchwar2687/Chrono/pkg/clock`
+- `github.com/SmitUplenchwar2687/Chrono/pkg/config`
 - `github.com/SmitUplenchwar2687/Chrono/pkg/limiter`
+- `github.com/SmitUplenchwar2687/Chrono/pkg/recorder`
+- `github.com/SmitUplenchwar2687/Chrono/pkg/replay`
+- `github.com/SmitUplenchwar2687/Chrono/pkg/server`
+- `github.com/SmitUplenchwar2687/Chrono/pkg/storage`
 
 ```go
 package main
@@ -245,8 +251,14 @@ The key design: every component uses a `Clock` interface. Swap in a `VirtualCloc
 chrono/
 ├── cmd/chrono/main.go           # Entry point
 ├── pkg/
-│   ├── clock/                   # Public clock API for embedding
-│   └── limiter/                 # Public limiter API for embedding
+│   ├── cli/                     # Public CLI entrypoint
+│   ├── clock/                   # Public clock API
+│   ├── config/                  # Public config API
+│   ├── limiter/                 # Public limiter API
+│   ├── recorder/                # Public recorder API
+│   ├── replay/                  # Public replay API
+│   ├── server/                  # Public HTTP server API
+│   └── storage/                 # Public storage API
 ├── internal/
 │   ├── cli/                     # Cobra CLI commands
 │   ├── clock/                   # Clock interface + VirtualClock
