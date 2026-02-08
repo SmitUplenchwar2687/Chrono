@@ -29,7 +29,7 @@ func makeRecords(count int, key string, interval time.Duration) []recorder.Traff
 func TestReplayer_BasicReplay(t *testing.T) {
 	vc := clock.NewVirtualClock(epoch)
 	lim := limiter.NewTokenBucket(5, time.Minute, 5, vc)
-	r := New(lim, vc, 0, Filter{}) // speed=0 → instant
+	r := New(lim, vc, 0, &Filter{}) // speed=0 → instant
 
 	r.LoadRecords(makeRecords(10, "user1", time.Second))
 
@@ -70,7 +70,7 @@ func TestReplayer_AdvancesClock(t *testing.T) {
 		records[i].Timestamp = epoch.Add(61*time.Second + time.Duration(i-5)*time.Second)
 	}
 
-	r := New(lim, vc, 0, Filter{})
+	r := New(lim, vc, 0, &Filter{})
 	r.LoadRecords(records)
 
 	summary, err := r.Run(context.Background(), nil)
@@ -93,7 +93,7 @@ func TestReplayer_Filter_Keys(t *testing.T) {
 		makeRecords(5, "user2", time.Second)...,
 	)
 
-	r := New(lim, vc, 0, Filter{Keys: []string{"user1"}})
+	r := New(lim, vc, 0, &Filter{Keys: []string{"user1"}})
 	r.LoadRecords(records)
 
 	summary, err := r.Run(context.Background(), nil)
@@ -119,7 +119,7 @@ func TestReplayer_Filter_Endpoints(t *testing.T) {
 		{Timestamp: epoch.Add(2 * time.Second), Key: "u1", Endpoint: "GET /health"},
 	}
 
-	r := New(lim, vc, 0, Filter{Endpoints: []string{"/api/data"}})
+	r := New(lim, vc, 0, &Filter{Endpoints: []string{"/api/data"}})
 	r.LoadRecords(records)
 
 	summary, err := r.Run(context.Background(), nil)
@@ -138,7 +138,7 @@ func TestReplayer_Filter_TimeRange(t *testing.T) {
 
 	records := makeRecords(10, "user1", time.Minute) // t=0, t=1m, ..., t=9m
 
-	r := New(lim, vc, 0, Filter{
+	r := New(lim, vc, 0, &Filter{
 		After:  epoch.Add(2 * time.Minute),
 		Before: epoch.Add(6 * time.Minute),
 	})
@@ -162,7 +162,7 @@ func TestReplayer_Load_FromJSON(t *testing.T) {
 	records := makeRecords(3, "user1", time.Second)
 	data, _ := json.Marshal(records)
 
-	r := New(lim, vc, 0, Filter{})
+	r := New(lim, vc, 0, &Filter{})
 	err := r.Load(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestReplayer_Load_FromJSON(t *testing.T) {
 func TestReplayer_EmptyRecords(t *testing.T) {
 	vc := clock.NewVirtualClock(epoch)
 	lim := limiter.NewTokenBucket(10, time.Minute, 10, vc)
-	r := New(lim, vc, 0, Filter{})
+	r := New(lim, vc, 0, &Filter{})
 
 	_, err := r.Run(context.Background(), nil)
 	if err == nil {
@@ -191,7 +191,7 @@ func TestReplayer_EmptyRecords(t *testing.T) {
 func TestReplayer_ContextCancellation(t *testing.T) {
 	vc := clock.NewVirtualClock(epoch)
 	lim := limiter.NewTokenBucket(100, time.Minute, 100, vc)
-	r := New(lim, vc, 0, Filter{})
+	r := New(lim, vc, 0, &Filter{})
 	r.LoadRecords(makeRecords(1000, "user1", time.Second))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -220,7 +220,7 @@ func TestReplayer_PerKeySummary(t *testing.T) {
 		makeRecords(5, "user2", time.Second)...,
 	)
 
-	r := New(lim, vc, 0, Filter{})
+	r := New(lim, vc, 0, &Filter{})
 	r.LoadRecords(records)
 
 	summary, err := r.Run(context.Background(), nil)
@@ -250,7 +250,7 @@ func TestReplayer_SortsRecords(t *testing.T) {
 		{Timestamp: epoch.Add(time.Second), Key: "u1", Endpoint: "GET /b"},
 	}
 
-	r := New(lim, vc, 0, Filter{})
+	r := New(lim, vc, 0, &Filter{})
 	r.LoadRecords(records)
 
 	var order []string

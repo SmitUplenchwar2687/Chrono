@@ -59,7 +59,7 @@ Speed: 0 = instant, 1 = real-time, 10 = 10x, 100 = 100x`,
 				return err
 			}
 
-			filter := replay.Filter{
+			filter := &replay.Filter{
 				Keys:      keys,
 				Endpoints: endpoints,
 			}

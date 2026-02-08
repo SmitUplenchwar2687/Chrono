@@ -69,17 +69,21 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"service": "chrono",
 		"status":  "running",
 		"time":    s.clock.Now().Format(time.RFC3339),
-	})
+	}); err != nil {
+		log.Printf("encode error: %v", err)
+	}
 }
 
 // handleHealth returns server health status.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
+		log.Printf("encode error: %v", err)
+	}
 }
 
 // handleCheck performs a rate limit check using the client IP as the key.
@@ -108,16 +112,18 @@ func (s *Server) respondWithDecision(w http.ResponseWriter, r *http.Request, key
 	// Record the traffic and decision.
 	now := s.clock.Now()
 	if s.recorder != nil {
-		s.recorder.Record(recorder.TrafficRecord{
+		if err := s.recorder.Record(recorder.TrafficRecord{
 			Timestamp: now,
 			Key:       key,
 			Endpoint:  r.Method + " " + r.URL.Path,
-		})
+		}); err != nil {
+			log.Printf("record error: %v", err)
+		}
 	}
 
 	// Broadcast to dashboard.
 	if s.hub != nil {
-		s.hub.Broadcast(recorder.DecisionEvent{
+		s.hub.Broadcast(&recorder.DecisionEvent{
 			Record: recorder.TrafficRecord{
 				Timestamp: now,
 				Key:       key,
@@ -138,7 +144,9 @@ func (s *Server) respondWithDecision(w http.ResponseWriter, r *http.Request, key
 		w.WriteHeader(http.StatusTooManyRequests)
 	}
 
-	json.NewEncoder(w).Encode(decision)
+	if err := json.NewEncoder(w).Encode(decision); err != nil {
+		log.Printf("encode error: %v", err)
+	}
 }
 
 // handleDashboardRedirect redirects /dashboard to /dashboard/.
@@ -149,7 +157,9 @@ func (s *Server) handleDashboardRedirect(w http.ResponseWriter, r *http.Request)
 // handleDashboard serves the embedded dashboard.
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(DashboardHTML))
+	if _, err := w.Write([]byte(DashboardHTML)); err != nil {
+		log.Printf("dashboard write error: %v", err)
+	}
 }
 
 // Start begins listening. It blocks until the server is shut down.

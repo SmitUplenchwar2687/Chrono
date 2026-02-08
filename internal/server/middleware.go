@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -25,7 +26,9 @@ func RecordingMiddleware(next http.Handler, rec *recorder.Recorder, clk clock.Cl
 			},
 		}
 
-		rec.Record(tr)
+		if err := rec.Record(tr); err != nil {
+			log.Printf("record error: %v", err)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

@@ -17,7 +17,7 @@ type Replayer struct {
 	records []recorder.TrafficRecord
 	limiter limiter.Limiter
 	clock   *clock.VirtualClock
-	filter  Filter
+	filter  *Filter
 	speed   float64 // 1.0 = real-time, 10.0 = 10x, 0 = instant
 }
 
@@ -47,9 +47,12 @@ type KeySummary struct {
 }
 
 // New creates a new replayer.
-func New(lim limiter.Limiter, vc *clock.VirtualClock, speed float64, filter Filter) *Replayer {
+func New(lim limiter.Limiter, vc *clock.VirtualClock, speed float64, filter *Filter) *Replayer {
 	if speed < 0 {
 		speed = 0
+	}
+	if filter == nil {
+		filter = &Filter{}
 	}
 	return &Replayer{
 		limiter: lim,

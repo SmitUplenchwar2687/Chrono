@@ -1,0 +1,11 @@
+{
+  "server": {
+    "addr": ":8080"
+  },
+  "limiter": {
+    "algorithm": "token_bucket",
+    "rate": 10,
+    "window": "1m",
+    "burst": 10
+  }
+}

@@ -57,7 +57,7 @@ then sends another batch to show how limits reset.`,
 				return enc.Encode(result)
 			}
 
-			printTestResult(result)
+			printTestResult(&result)
 			return nil
 		},
 	}
@@ -162,7 +162,7 @@ func runTest(vc *clock.VirtualClock, lim limiter.Limiter, keys []string, request
 	return result
 }
 
-func printTestResult(r TestResult) {
+func printTestResult(r *TestResult) {
 	fmt.Println("=== Chrono Rate Limit Test ===")
 	fmt.Println()
 

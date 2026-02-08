@@ -16,7 +16,7 @@ type Filter struct {
 }
 
 // Match returns true if the record passes the filter.
-func (f Filter) Match(r recorder.TrafficRecord) bool {
+func (f *Filter) Match(r recorder.TrafficRecord) bool {
 	if len(f.Keys) > 0 && !contains(f.Keys, r.Key) {
 		return false
 	}

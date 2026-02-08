@@ -59,7 +59,7 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 // Broadcast sends a decision event to all connected WebSocket clients.
-func (h *Hub) Broadcast(event recorder.DecisionEvent) {
+func (h *Hub) Broadcast(event *recorder.DecisionEvent) {
 	data, err := json.Marshal(event)
 	if err != nil {
 		log.Printf("websocket marshal error: %v", err)
