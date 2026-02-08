@@ -19,6 +19,7 @@ Fast-forward time, replay traffic, and visualize rate limit decisions.`,
 		newTestCmd(),
 		newReplayCmd(),
 		newDashboardCmd(),
+		newGenerateCmd(),
 	)
 
 	return root

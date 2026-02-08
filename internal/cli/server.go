@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/SmitUplenchwar2687/Chrono/internal/clock"
+	"github.com/SmitUplenchwar2687/Chrono/internal/config"
 	"github.com/SmitUplenchwar2687/Chrono/internal/limiter"
 	"github.com/SmitUplenchwar2687/Chrono/internal/recorder"
 	"github.com/SmitUplenchwar2687/Chrono/internal/server"
@@ -19,12 +20,13 @@ import (
 
 func newServerCmd() *cobra.Command {
 	var (
-		addr      string
-		algorithm string
-		rate      int
-		window    time.Duration
-		burst     int
+		addr       string
+		algorithm  string
+		rate       int
+		window     time.Duration
+		burst      int
 		recordFile string
+		configFile string
 	)
 
 	cmd := &cobra.Command{
@@ -42,8 +44,37 @@ Endpoints:
 		Example: `  chrono server
   chrono server --addr :9090 --algorithm sliding_window --rate 100 --window 1m
   chrono server --algorithm token_bucket --rate 10 --window 1m --burst 20
-  chrono server --record traffic.json`,
+  chrono server --record traffic.json
+  chrono server --config chrono.json
+  chrono server --config chrono.json --rate 20  # flag overrides config`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load config file if specified; flags override config values.
+			if configFile != "" {
+				cfg, err := config.LoadFile(configFile)
+				if err != nil {
+					return err
+				}
+				if err := cfg.Validate(); err != nil {
+					return fmt.Errorf("invalid config: %w", err)
+				}
+				// Only apply config values for flags that weren't explicitly set.
+				if !cmd.Flags().Changed("addr") {
+					addr = cfg.Server.Addr
+				}
+				if !cmd.Flags().Changed("algorithm") {
+					algorithm = string(cfg.Limiter.Algorithm)
+				}
+				if !cmd.Flags().Changed("rate") {
+					rate = cfg.Limiter.Rate
+				}
+				if !cmd.Flags().Changed("window") {
+					window = cfg.Limiter.Window
+				}
+				if !cmd.Flags().Changed("burst") {
+					burst = cfg.Limiter.Burst
+				}
+			}
+
 			clk := clock.NewRealClock()
 			lim, err := createLimiter(limiter.Algorithm(algorithm), rate, window, burst, clk)
 			if err != nil {
@@ -97,6 +128,7 @@ Endpoints:
 	cmd.Flags().DurationVar(&window, "window", time.Minute, "rate limit window duration")
 	cmd.Flags().IntVar(&burst, "burst", 0, "max burst size (token_bucket only, 0 = same as rate)")
 	cmd.Flags().StringVar(&recordFile, "record", "", "record traffic to JSON file (exported on shutdown)")
+	cmd.Flags().StringVar(&configFile, "config", "", "path to JSON config file (flags override config values)")
 
 	return cmd
 }

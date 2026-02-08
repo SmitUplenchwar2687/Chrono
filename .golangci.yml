@@ -1,0 +1,29 @@
+run:
+  timeout: 3m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - gosimple
+    - gocritic
+
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+
+issues:
+  exclude-rules:
+    # Allow unused parameters in interface implementations.
+    - linters:
+        - unused
+      text: "parameter .* is unused"
+    # Test files can be more relaxed.
+    - path: _test\.go
+      linters:
+        - errcheck
