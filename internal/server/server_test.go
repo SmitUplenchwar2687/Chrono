@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -27,7 +28,7 @@ func startTestServer(t *testing.T, lim limiter.Limiter, clk clock.Clock, opts ..
 	go srv.StartOnListener(ln)
 	baseURL := "http://" + ln.Addr().String()
 	return baseURL, func() {
-		srv.Shutdown(nil)
+		srv.Shutdown(context.Background())
 	}
 }
 

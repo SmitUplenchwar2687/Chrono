@@ -114,18 +114,14 @@ func generateTraffic(count, numKeys int, duration time.Duration, pattern string)
 		userKeys[i] = fmt.Sprintf("user-%d", i+1)
 	}
 
-	records := make([]recorder.TrafficRecord, 0, count)
-
 	switch pattern {
 	case "burst":
-		records = generateBurst(rng, start, count, userKeys, duration)
+		return generateBurst(rng, start, count, userKeys, duration)
 	case "ramp":
-		records = generateRamp(rng, start, count, userKeys, duration)
+		return generateRamp(rng, start, count, userKeys, duration)
 	default: // "steady"
-		records = generateSteady(rng, start, count, userKeys, duration)
+		return generateSteady(rng, start, count, userKeys, duration)
 	}
-
-	return records
 }
 
 func generateSteady(rng *rand.Rand, start time.Time, count int, keys []string, dur time.Duration) []recorder.TrafficRecord {
