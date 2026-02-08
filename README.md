@@ -35,6 +35,7 @@ Chrono now exposes public Go packages for embedding core features in other proje
 - `github.com/SmitUplenchwar2687/Chrono/pkg/cli`
 - `github.com/SmitUplenchwar2687/Chrono/pkg/clock`
 - `github.com/SmitUplenchwar2687/Chrono/pkg/config`
+- `github.com/SmitUplenchwar2687/Chrono/pkg/generate`
 - `github.com/SmitUplenchwar2687/Chrono/pkg/limiter`
 - `github.com/SmitUplenchwar2687/Chrono/pkg/recorder`
 - `github.com/SmitUplenchwar2687/Chrono/pkg/replay`
@@ -254,6 +255,7 @@ chrono/
 │   ├── cli/                     # Public CLI entrypoint
 │   ├── clock/                   # Public clock API
 │   ├── config/                  # Public config API
+│   ├── generate/                # Public traffic generation API
 │   ├── limiter/                 # Public limiter API
 │   ├── recorder/                # Public recorder API
 │   ├── replay/                  # Public replay API

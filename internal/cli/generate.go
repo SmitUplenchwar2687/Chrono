@@ -3,14 +3,13 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/SmitUplenchwar2687/Chrono/internal/config"
-	"github.com/SmitUplenchwar2687/Chrono/internal/recorder"
+	pkggenerate "github.com/SmitUplenchwar2687/Chrono/pkg/generate"
 )
 
 func newGenerateCmd() *cobra.Command {
@@ -47,7 +46,15 @@ Patterns:
 				output = "traffic.json"
 			}
 
-			records := generateTraffic(count, keys, duration, pattern)
+			records, err := pkggenerate.GenerateTraffic(pkggenerate.Options{
+				Count:    count,
+				Keys:     keys,
+				Duration: duration,
+				Pattern:  pattern,
+			})
+			if err != nil {
+				return err
+			}
 
 			f, err := os.Create(output)
 			if err != nil {
@@ -95,91 +102,4 @@ Patterns:
 
 	cmd.AddCommand(trafficCmd, configCmd)
 	return cmd
-}
-
-var endpoints = []string{
-	"GET /api/users",
-	"GET /api/data",
-	"POST /api/events",
-	"GET /api/search",
-	"PUT /api/settings",
-}
-
-func generateTraffic(count, numKeys int, duration time.Duration, pattern string) []recorder.TrafficRecord {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	start := time.Now().Truncate(time.Second)
-
-	userKeys := make([]string, numKeys)
-	for i := range userKeys {
-		userKeys[i] = fmt.Sprintf("user-%d", i+1)
-	}
-
-	switch pattern {
-	case "burst":
-		return generateBurst(rng, start, count, userKeys, duration)
-	case "ramp":
-		return generateRamp(rng, start, count, userKeys, duration)
-	default: // "steady"
-		return generateSteady(rng, start, count, userKeys, duration)
-	}
-}
-
-func generateSteady(rng *rand.Rand, start time.Time, count int, keys []string, dur time.Duration) []recorder.TrafficRecord {
-	interval := dur / time.Duration(count)
-	records := make([]recorder.TrafficRecord, count)
-	for i := range records {
-		records[i] = recorder.TrafficRecord{
-			Timestamp: start.Add(time.Duration(i) * interval),
-			Key:       keys[rng.Intn(len(keys))],
-			Endpoint:  endpoints[rng.Intn(len(endpoints))],
-		}
-	}
-	return records
-}
-
-func generateBurst(rng *rand.Rand, start time.Time, count int, keys []string, dur time.Duration) []recorder.TrafficRecord {
-	records := make([]recorder.TrafficRecord, 0, count)
-	numBursts := 4
-	burstSize := count / numBursts
-	burstGap := dur / time.Duration(numBursts)
-
-	for b := 0; b < numBursts; b++ {
-		burstStart := start.Add(time.Duration(b) * burstGap)
-		for i := 0; i < burstSize; i++ {
-			// Requests within a burst are very close together.
-			offset := time.Duration(rng.Intn(1000)) * time.Millisecond
-			records = append(records, recorder.TrafficRecord{
-				Timestamp: burstStart.Add(offset),
-				Key:       keys[rng.Intn(len(keys))],
-				Endpoint:  endpoints[rng.Intn(len(endpoints))],
-			})
-		}
-	}
-
-	// Fill remaining.
-	for len(records) < count {
-		records = append(records, recorder.TrafficRecord{
-			Timestamp: start.Add(time.Duration(rng.Int63n(int64(dur)))),
-			Key:       keys[rng.Intn(len(keys))],
-			Endpoint:  endpoints[rng.Intn(len(endpoints))],
-		})
-	}
-
-	return records
-}
-
-func generateRamp(rng *rand.Rand, start time.Time, count int, keys []string, dur time.Duration) []recorder.TrafficRecord {
-	records := make([]recorder.TrafficRecord, 0, count)
-	// Use quadratic distribution: more requests towards the end.
-	for i := 0; i < count; i++ {
-		// t is proportional to sqrt(i/count), concentrating records towards the end.
-		frac := float64(i) / float64(count)
-		t := start.Add(time.Duration(frac * frac * float64(dur)))
-		records = append(records, recorder.TrafficRecord{
-			Timestamp: t,
-			Key:       keys[rng.Intn(len(keys))],
-			Endpoint:  endpoints[rng.Intn(len(endpoints))],
-		})
-	}
-	return records
 }
