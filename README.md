@@ -28,6 +28,34 @@ make build
 ./bin/chrono --help
 ```
 
+## Use As A Library
+
+Chrono now exposes public Go packages for embedding limiters in other projects:
+
+- `github.com/SmitUplenchwar2687/Chrono/pkg/clock`
+- `github.com/SmitUplenchwar2687/Chrono/pkg/limiter`
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	chronoclock "github.com/SmitUplenchwar2687/Chrono/pkg/clock"
+	chronolimiter "github.com/SmitUplenchwar2687/Chrono/pkg/limiter"
+)
+
+func main() {
+	clk := chronoclock.NewRealClock()
+	lim := chronolimiter.NewTokenBucket(10, time.Minute, 10, clk)
+
+	d := lim.Allow(context.Background(), "user-123")
+	fmt.Printf("allowed=%v remaining=%d\n", d.Allowed, d.Remaining)
+}
+```
+
 ## Quick Start
 
 ### 1. Test rate limiting with time travel
@@ -216,6 +244,9 @@ The key design: every component uses a `Clock` interface. Swap in a `VirtualCloc
 ```
 chrono/
 ├── cmd/chrono/main.go           # Entry point
+├── pkg/
+│   ├── clock/                   # Public clock API for embedding
+│   └── limiter/                 # Public limiter API for embedding
 ├── internal/
 │   ├── cli/                     # Cobra CLI commands
 │   ├── clock/                   # Clock interface + VirtualClock
