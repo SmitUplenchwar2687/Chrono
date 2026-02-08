@@ -1,11 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"github.com/SmitUplenchwar2687/Chrono/internal/cli"
 )
 
 func main() {
-	fmt.Println("chrono - time-travel testing for rate limits")
-	os.Exit(0)
+	if err := cli.NewRootCmd().Execute(); err != nil {
+		os.Exit(1)
+	}
 }
