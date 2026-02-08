@@ -13,6 +13,7 @@ import (
 
 	"github.com/SmitUplenchwar2687/Chrono/internal/clock"
 	"github.com/SmitUplenchwar2687/Chrono/internal/limiter"
+	"github.com/SmitUplenchwar2687/Chrono/internal/recorder"
 	"github.com/SmitUplenchwar2687/Chrono/internal/server"
 )
 
@@ -23,6 +24,7 @@ func newServerCmd() *cobra.Command {
 		rate      int
 		window    time.Duration
 		burst     int
+		recordFile string
 	)
 
 	cmd := &cobra.Command{
@@ -31,13 +33,16 @@ func newServerCmd() *cobra.Command {
 		Long: `Starts an HTTP server that applies rate limiting to incoming requests.
 
 Endpoints:
-  GET /              Server info and current time
-  GET /health        Health check
-  GET /api/check     Check rate limit using client IP
-  GET /api/check/:key  Check rate limit for a specific key`,
+  GET /                  Server info and current time
+  GET /health            Health check
+  GET /api/check         Check rate limit using client IP
+  GET /api/check/:key    Check rate limit for a specific key
+  GET /dashboard/        Live visual dashboard
+  WS  /ws                WebSocket for real-time events`,
 		Example: `  chrono server
   chrono server --addr :9090 --algorithm sliding_window --rate 100 --window 1m
-  chrono server --algorithm token_bucket --rate 10 --window 1m --burst 20`,
+  chrono server --algorithm token_bucket --rate 10 --window 1m --burst 20
+  chrono server --record traffic.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			clk := clock.NewRealClock()
 			lim, err := createLimiter(limiter.Algorithm(algorithm), rate, window, burst, clk)
@@ -45,7 +50,18 @@ Endpoints:
 				return err
 			}
 
-			srv := server.New(addr, lim, clk)
+			opts := server.Options{
+				Hub: server.NewHub(),
+			}
+
+			if recordFile != "" {
+				opts.Recorder = recorder.New(nil)
+			}
+
+			srv := server.New(addr, lim, clk, opts)
+
+			log.Printf("Dashboard: http://localhost%s/dashboard/", addr)
+			log.Printf("API:       http://localhost%s/api/check/{key}", addr)
 
 			// Graceful shutdown on SIGINT/SIGTERM.
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -61,6 +77,13 @@ Endpoints:
 				return err
 			case <-ctx.Done():
 				log.Println("shutting down...")
+				// Export recordings if enabled.
+				if recordFile != "" && opts.Recorder != nil {
+					log.Printf("exporting %d records to %s", opts.Recorder.Len(), recordFile)
+					if err := opts.Recorder.ExportFile(recordFile); err != nil {
+						log.Printf("error exporting records: %v", err)
+					}
+				}
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				return srv.Shutdown(shutdownCtx)
@@ -73,6 +96,7 @@ Endpoints:
 	cmd.Flags().IntVar(&rate, "rate", 10, "requests allowed per window")
 	cmd.Flags().DurationVar(&window, "window", time.Minute, "rate limit window duration")
 	cmd.Flags().IntVar(&burst, "burst", 0, "max burst size (token_bucket only, 0 = same as rate)")
+	cmd.Flags().StringVar(&recordFile, "record", "", "record traffic to JSON file (exported on shutdown)")
 
 	return cmd
 }

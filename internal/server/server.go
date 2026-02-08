@@ -11,6 +11,7 @@ import (
 
 	"github.com/SmitUplenchwar2687/Chrono/internal/clock"
 	"github.com/SmitUplenchwar2687/Chrono/internal/limiter"
+	"github.com/SmitUplenchwar2687/Chrono/internal/recorder"
 )
 
 // Server is the Chrono HTTP server that applies rate limiting to requests.
@@ -19,14 +20,26 @@ type Server struct {
 	limiter    limiter.Limiter
 	clock      clock.Clock
 	mux        *http.ServeMux
+	hub        *Hub
+	recorder   *recorder.Recorder
+}
+
+// Options configures optional server features.
+type Options struct {
+	Hub      *Hub              // WebSocket hub for live streaming (nil = disabled)
+	Recorder *recorder.Recorder // Traffic recorder (nil = disabled)
 }
 
 // New creates a new Chrono server.
-func New(addr string, lim limiter.Limiter, clk clock.Clock) *Server {
+func New(addr string, lim limiter.Limiter, clk clock.Clock, opts ...Options) *Server {
 	s := &Server{
 		limiter: lim,
 		clock:   clk,
 		mux:     http.NewServeMux(),
+	}
+	if len(opts) > 0 {
+		s.hub = opts[0].Hub
+		s.recorder = opts[0].Recorder
 	}
 	s.routes()
 	s.httpServer = &http.Server{
@@ -41,6 +54,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/api/check", s.handleCheck)
 	s.mux.HandleFunc("/api/check/", s.handleCheckKey)
+
+	if s.hub != nil {
+		s.mux.HandleFunc("/ws", s.hub.HandleWebSocket)
+	}
+	s.mux.HandleFunc("/dashboard", s.handleDashboardRedirect)
+	s.mux.HandleFunc("/dashboard/", s.handleDashboard)
 }
 
 // handleRoot serves a welcome message.
@@ -86,6 +105,29 @@ func (s *Server) handleCheckKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) respondWithDecision(w http.ResponseWriter, r *http.Request, key string) {
 	decision := s.limiter.Allow(r.Context(), key)
 
+	// Record the traffic and decision.
+	now := s.clock.Now()
+	if s.recorder != nil {
+		s.recorder.Record(recorder.TrafficRecord{
+			Timestamp: now,
+			Key:       key,
+			Endpoint:  r.Method + " " + r.URL.Path,
+		})
+	}
+
+	// Broadcast to dashboard.
+	if s.hub != nil {
+		s.hub.Broadcast(recorder.DecisionEvent{
+			Record: recorder.TrafficRecord{
+				Timestamp: now,
+				Key:       key,
+				Endpoint:  r.Method + " " + r.URL.Path,
+			},
+			Decision: decision,
+			Time:     now,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", decision.Limit))
 	w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", decision.Remaining))
@@ -97,6 +139,17 @@ func (s *Server) respondWithDecision(w http.ResponseWriter, r *http.Request, key
 	}
 
 	json.NewEncoder(w).Encode(decision)
+}
+
+// handleDashboardRedirect redirects /dashboard to /dashboard/.
+func (s *Server) handleDashboardRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/dashboard/", http.StatusMovedPermanently)
+}
+
+// handleDashboard serves the embedded dashboard.
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(DashboardHTML))
 }
 
 // Start begins listening. It blocks until the server is shut down.

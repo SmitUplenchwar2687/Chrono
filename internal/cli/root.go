@@ -17,6 +17,8 @@ Fast-forward time, replay traffic, and visualize rate limit decisions.`,
 	root.AddCommand(
 		newServerCmd(),
 		newTestCmd(),
+		newReplayCmd(),
+		newDashboardCmd(),
 	)
 
 	return root
