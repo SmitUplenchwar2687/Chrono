@@ -47,7 +47,7 @@ func TestCreateServerLimiter_Memory(t *testing.T) {
 		},
 	}
 
-	lim, err := createServerLimiter(limiter.AlgorithmTokenBucket, 5, time.Minute, 5, vc, cfg)
+	lim, err := createServerLimiter(limiter.AlgorithmTokenBucket, 5, time.Minute, 5, vc, &cfg)
 	if err != nil {
 		t.Fatalf("createServerLimiter() error = %v", err)
 	}
@@ -73,7 +73,7 @@ func TestCreateServerLimiter_RedisRequiresSlidingWindow(t *testing.T) {
 		},
 	}
 
-	_, err := createServerLimiter(limiter.AlgorithmTokenBucket, 5, time.Minute, 5, vc, cfg)
+	_, err := createServerLimiter(limiter.AlgorithmTokenBucket, 5, time.Minute, 5, vc, &cfg)
 	if err == nil {
 		t.Fatal("expected error for redis + token_bucket")
 	}
@@ -92,7 +92,7 @@ func TestCreateServerLimiter_CRDTRequiresSlidingWindow(t *testing.T) {
 		},
 	}
 
-	_, err := createServerLimiter(limiter.AlgorithmFixedWindow, 5, time.Minute, 0, vc, cfg)
+	_, err := createServerLimiter(limiter.AlgorithmFixedWindow, 5, time.Minute, 0, vc, &cfg)
 	if err == nil {
 		t.Fatal("expected error for crdt + fixed_window")
 	}

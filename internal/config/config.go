@@ -87,7 +87,11 @@ func Default() Config {
 }
 
 // Validate checks that the config is valid.
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
+	if c == nil {
+		return fmt.Errorf("config is nil")
+	}
+
 	if c.Limiter.Rate <= 0 {
 		return fmt.Errorf("rate must be positive, got %d", c.Limiter.Rate)
 	}

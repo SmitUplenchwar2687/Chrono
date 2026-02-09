@@ -175,7 +175,7 @@ Endpoints:
 			}
 
 			clk := clock.NewRealClock()
-			lim, err := createServerLimiter(limiter.Algorithm(algorithm), rate, window, burst, clk, storageCfg)
+			lim, err := createServerLimiter(limiter.Algorithm(algorithm), rate, window, burst, clk, &storageCfg)
 			if err != nil {
 				return err
 			}
@@ -260,8 +260,12 @@ func createServerLimiter(
 	window time.Duration,
 	burst int,
 	clk clock.Clock,
-	storageCfg config.StorageConfig,
+	storageCfg *config.StorageConfig,
 ) (limiter.Limiter, error) {
+	if storageCfg == nil {
+		return nil, fmt.Errorf("storage config is required")
+	}
+
 	backend := storageCfg.Backend
 	if backend == "" {
 		backend = chronostorage.BackendMemory
