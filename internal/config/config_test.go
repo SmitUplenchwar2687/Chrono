@@ -20,6 +20,9 @@ func TestDefault(t *testing.T) {
 	if cfg.Limiter.Rate != 10 {
 		t.Errorf("default rate = %d, want 10", cfg.Limiter.Rate)
 	}
+	if cfg.Storage.Backend != "memory" {
+		t.Errorf("default storage backend = %q, want memory", cfg.Storage.Backend)
+	}
 }
 
 func TestValidate_Valid(t *testing.T) {
@@ -77,6 +80,39 @@ func TestValidate_BadAlgorithm(t *testing.T) {
 	}
 }
 
+func TestValidate_BadStorageBackend(t *testing.T) {
+	cfg := Default()
+	cfg.Storage.Backend = "bogus"
+	if err := cfg.Validate(); err == nil {
+		t.Error("unknown storage backend should be invalid")
+	}
+}
+
+func TestValidate_RedisRequiresHostAndPort(t *testing.T) {
+	cfg := Default()
+	cfg.Storage.Backend = "redis"
+	cfg.Storage.Redis.Host = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("missing redis host should be invalid")
+	}
+
+	cfg = Default()
+	cfg.Storage.Backend = "redis"
+	cfg.Storage.Redis.Port = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("non-positive redis port should be invalid")
+	}
+}
+
+func TestValidate_CRDTRequiresNodeIDAndBindAddr(t *testing.T) {
+	cfg := Default()
+	cfg.Storage.Backend = "crdt"
+	cfg.Storage.CRDT.NodeID = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("missing crdt node_id should be invalid")
+	}
+}
+
 func TestLoadFile_Full(t *testing.T) {
 	content := `{
   "server": { "addr": ":9090" },
@@ -85,6 +121,18 @@ func TestLoadFile_Full(t *testing.T) {
     "rate": 100,
     "window": "30s",
     "burst": 50
+  },
+  "storage": {
+    "backend": "redis",
+    "redis": {
+      "host": "127.0.0.1",
+      "port": 6380,
+      "password": "secret",
+      "db": 2,
+      "pool_size": 25,
+      "max_retries": 5,
+      "dial_timeout": "4s"
+    }
   }
 }`
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -109,6 +157,15 @@ func TestLoadFile_Full(t *testing.T) {
 	}
 	if cfg.Limiter.Burst != 50 {
 		t.Errorf("burst = %d, want 50", cfg.Limiter.Burst)
+	}
+	if cfg.Storage.Backend != "redis" {
+		t.Errorf("storage backend = %q, want redis", cfg.Storage.Backend)
+	}
+	if cfg.Storage.Redis.Host != "127.0.0.1" || cfg.Storage.Redis.Port != 6380 {
+		t.Errorf("redis endpoint = %s:%d, want 127.0.0.1:6380", cfg.Storage.Redis.Host, cfg.Storage.Redis.Port)
+	}
+	if cfg.Storage.Redis.DialTimeout != 4*time.Second {
+		t.Errorf("redis dial_timeout = %s, want 4s", cfg.Storage.Redis.DialTimeout)
 	}
 }
 
@@ -135,6 +192,9 @@ func TestLoadFile_Partial(t *testing.T) {
 	}
 	if cfg.Limiter.Window != time.Minute {
 		t.Errorf("window should stay default, got %v", cfg.Limiter.Window)
+	}
+	if cfg.Storage.Backend != "memory" {
+		t.Errorf("storage backend should stay default, got %q", cfg.Storage.Backend)
 	}
 }
 
@@ -163,6 +223,17 @@ func TestLoadFile_BadDuration(t *testing.T) {
 	_, err := LoadFile(path)
 	if err == nil {
 		t.Error("expected error for bad duration")
+	}
+}
+
+func TestLoadFile_BadStorageDuration(t *testing.T) {
+	content := `{ "storage": { "memory": { "cleanup_interval": "not-a-duration" } } }`
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(content), 0o644)
+
+	_, err := LoadFile(path)
+	if err == nil {
+		t.Error("expected error for bad storage duration")
 	}
 }
 

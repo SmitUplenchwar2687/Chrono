@@ -161,6 +161,8 @@ chrono test --algorithm sliding_window --keys user1,user2 --json
 ```bash
 chrono server --addr :9090 --algorithm sliding_window --rate 100 --window 1m
 chrono server --record traffic.json
+chrono server --storage redis --algorithm sliding_window --redis-host localhost:6379
+chrono server --storage crdt --algorithm sliding_window --crdt-node-id node-1 --crdt-bind-addr :8081
 ```
 
 **Endpoints:**
@@ -175,6 +177,58 @@ chrono server --record traffic.json
 | `WS /ws` | WebSocket for real-time events |
 
 **Response headers:** `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After` (on 429).
+
+**Storage backends:**
+
+- `memory` (default): supports `token_bucket`, `sliding_window`, `fixed_window`
+- `redis`: production backend (uses Redis Lua + sliding window)
+- `crdt`: experimental backend (sliding window style, eventual consistency)
+
+When using `redis` or `crdt`, use `--algorithm sliding_window`.
+
+Storage-related flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--storage` | `memory` | Storage backend (`memory`, `redis`, `crdt`) |
+| `--storage-memory-cleanup-interval` | `1m` | Memory backend cleanup interval |
+| `--redis-host` | `localhost` | Redis host or `host:port` |
+| `--redis-port` | `6379` | Redis port (ignored if `--redis-host` has port) |
+| `--redis-password` | `""` | Redis password |
+| `--redis-db` | `0` | Redis DB index |
+| `--redis-cluster` | `false` | Enable Redis cluster mode |
+| `--redis-cluster-nodes` | (none) | Cluster node list (`host:port`) |
+| `--redis-pool-size` | `20` | Redis pool size |
+| `--redis-max-retries` | `3` | Redis max retries |
+| `--redis-dial-timeout` | `5s` | Redis dial timeout |
+| `--crdt-node-id` | `""` | CRDT node ID (required for CRDT) |
+| `--crdt-bind-addr` | `:8081` | CRDT gossip bind address |
+| `--crdt-peers` | (none) | CRDT peer addresses |
+| `--crdt-gossip-interval` | `1s` | CRDT gossip interval |
+
+Example config (`chrono.json`) with Redis:
+
+```json
+{
+  "server": { "addr": ":8080" },
+  "limiter": {
+    "algorithm": "sliding_window",
+    "rate": 100,
+    "window": "1m",
+    "burst": 100
+  },
+  "storage": {
+    "backend": "redis",
+    "redis": {
+      "host": "localhost",
+      "port": 6379,
+      "pool_size": 20,
+      "max_retries": 3,
+      "dial_timeout": "5s"
+    }
+  }
+}
+```
 
 ### `chrono replay`
 
