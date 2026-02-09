@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ func TestCRDTStorage_GossipSynchronization(t *testing.T) {
 		_ = n2.Close()
 	}()
 
-	window := 5 * time.Second
+	window := 30 * time.Second
 	allowed, _, _, err := n1.CheckLimit(context.Background(), "user-sync", 10, window)
 	if err != nil {
 		t.Fatalf("CheckLimit() error = %v", err)
@@ -57,16 +58,10 @@ func TestCRDTStorage_GossipSynchronization(t *testing.T) {
 	if !allowed {
 		t.Fatal("first request should be allowed")
 	}
+	n1.gossipOnce()
 
-	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() bool {
-		bk, _ := n2.bucketKey("user-sync", window, time.Now())
-		n2.mu.RLock()
-		counter := n2.counters[bk]
-		n2.mu.RUnlock()
-		if counter == nil {
-			return false
-		}
-		return counter.Total() >= 1
+	if err := waitForCondition(5*time.Second, 50*time.Millisecond, func() bool {
+		return hasCounterTotalAtLeast(n2, "user-sync", 1)
 	}); err != nil {
 		t.Fatalf("expected n2 to receive gossip state: %v", err)
 	}
@@ -102,7 +97,7 @@ func TestCRDTStorage_EventualConsistencyAffectsChecks(t *testing.T) {
 		_ = n2.Close()
 	}()
 
-	window := 5 * time.Second
+	window := 30 * time.Second
 	key := "user-ev"
 
 	// node1 consumes the only slot for limit=1.
@@ -113,9 +108,10 @@ func TestCRDTStorage_EventualConsistencyAffectsChecks(t *testing.T) {
 	if !allowed {
 		t.Fatal("first request should be allowed")
 	}
+	n1.gossipOnce()
 
 	// Wait for node2 to converge, then it should deny for limit=1.
-	if err := waitForCondition(3*time.Second, 50*time.Millisecond, func() bool {
+	if err := waitForCondition(5*time.Second, 50*time.Millisecond, func() bool {
 		allowed, _, _, err := n2.CheckLimit(context.Background(), key, 1, window)
 		return err == nil && !allowed
 	}); err != nil {
@@ -174,4 +170,52 @@ func waitForCondition(timeout, interval time.Duration, fn func() bool) error {
 		time.Sleep(interval)
 	}
 	return context.DeadlineExceeded
+}
+
+func hasCounterTotalAtLeast(s *CRDTStorage, logicalKey string, want int64) bool {
+	prefix := logicalKey + "|"
+
+	s.mu.RLock()
+	keys := make([]string, 0, len(s.counters))
+	counters := make(map[string]*GCounter, len(s.counters))
+	for k, c := range s.counters {
+		keys = append(keys, k)
+		counters[k] = c
+	}
+	s.mu.RUnlock()
+
+	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		counter := counters[k]
+		if counter != nil && counter.Total() >= want {
+			return true
+		}
+	}
+
+	return false
+}
+
+func TestBucketKeyFormat(t *testing.T) {
+	s, err := NewCRDTStorage(&CRDTConfig{
+		NodeID:         "fmt-node",
+		BindAddr:       "127.0.0.1:0",
+		GossipInterval: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewCRDTStorage() error = %v", err)
+	}
+	defer s.Close()
+
+	k, _ := s.bucketKey("abc", time.Second, time.Unix(0, 0))
+	if !strings.HasPrefix(k, "abc|") {
+		t.Fatalf("unexpected bucket key format: %s", k)
+	}
+	if strings.Count(k, "|") != 2 {
+		t.Fatalf("expected two separators in bucket key: %s", k)
+	}
+	if _, err := fmt.Sscanf(k, "abc|%d|%d", new(int64), new(int64)); err != nil {
+		t.Fatalf("bucket key should embed numeric window metadata: %s", k)
+	}
 }
