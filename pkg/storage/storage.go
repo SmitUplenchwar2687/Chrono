@@ -74,7 +74,7 @@ func NewStorage(cfg Config) (Storage, error) {
 	case BackendRedis:
 		return NewRedisStorage(cfg.Redis)
 	case BackendCRDT:
-		return nil, fmt.Errorf("crdt backend is not implemented yet")
+		return NewCRDTStorage(cfg.CRDT)
 	default:
 		return nil, fmt.Errorf("unknown storage backend %q", backend)
 	}

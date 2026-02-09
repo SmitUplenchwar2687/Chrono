@@ -40,6 +40,18 @@ func TestNewStorage_PlaceholderBackends(t *testing.T) {
 
 	_, err = NewStorage(Config{Backend: BackendCRDT})
 	if err == nil {
-		t.Fatal("expected crdt not-implemented error")
+		t.Fatal("expected crdt config validation error")
 	}
+
+	s, err := NewStorage(Config{
+		Backend: BackendCRDT,
+		CRDT: &CRDTConfig{
+			NodeID:   "n1",
+			BindAddr: "127.0.0.1:0",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected valid crdt config to initialize, got error: %v", err)
+	}
+	_ = s.Close()
 }
