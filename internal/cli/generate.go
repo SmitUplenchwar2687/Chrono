@@ -46,7 +46,7 @@ Patterns:
 				output = "traffic.json"
 			}
 
-			records, err := pkggenerate.GenerateTraffic(pkggenerate.Options{
+			records, err := pkggenerate.GenerateTraffic(&pkggenerate.Options{
 				Count:    count,
 				Keys:     keys,
 				Duration: duration,

@@ -49,40 +49,46 @@ func DefaultOptions() Options {
 }
 
 // GenerateTraffic creates synthetic traffic records based on the provided options.
-func GenerateTraffic(opts Options) ([]recorder.TrafficRecord, error) {
-	if opts.Count <= 0 {
-		return nil, fmt.Errorf("count must be positive, got %d", opts.Count)
-	}
-	if opts.Keys <= 0 {
-		return nil, fmt.Errorf("keys must be positive, got %d", opts.Keys)
-	}
-	if opts.Duration <= 0 {
-		return nil, fmt.Errorf("duration must be positive, got %s", opts.Duration)
+func GenerateTraffic(opts *Options) ([]recorder.TrafficRecord, error) {
+	if opts == nil {
+		return nil, fmt.Errorf("options are required")
 	}
 
-	if opts.Pattern == "" {
-		opts.Pattern = PatternSteady
+	cfg := *opts
+
+	if cfg.Count <= 0 {
+		return nil, fmt.Errorf("count must be positive, got %d", cfg.Count)
 	}
-	if opts.Start.IsZero() {
-		opts.Start = time.Now().Truncate(time.Second)
+	if cfg.Keys <= 0 {
+		return nil, fmt.Errorf("keys must be positive, got %d", cfg.Keys)
 	}
-	if len(opts.Endpoints) == 0 {
-		opts.Endpoints = DefaultEndpoints
-	}
-	if opts.Seed == 0 {
-		opts.Seed = time.Now().UnixNano()
+	if cfg.Duration <= 0 {
+		return nil, fmt.Errorf("duration must be positive, got %s", cfg.Duration)
 	}
 
-	rng := rand.New(rand.NewSource(opts.Seed))
-	userKeys := makeUserKeys(opts.Keys)
+	if cfg.Pattern == "" {
+		cfg.Pattern = PatternSteady
+	}
+	if cfg.Start.IsZero() {
+		cfg.Start = time.Now().Truncate(time.Second)
+	}
+	if len(cfg.Endpoints) == 0 {
+		cfg.Endpoints = DefaultEndpoints
+	}
+	if cfg.Seed == 0 {
+		cfg.Seed = time.Now().UnixNano()
+	}
 
-	switch opts.Pattern {
+	rng := rand.New(rand.NewSource(cfg.Seed))
+	userKeys := makeUserKeys(cfg.Keys)
+
+	switch cfg.Pattern {
 	case PatternBurst:
-		return generateBurst(rng, opts.Start, opts.Count, userKeys, opts.Endpoints, opts.Duration), nil
+		return generateBurst(rng, cfg.Start, cfg.Count, userKeys, cfg.Endpoints, cfg.Duration), nil
 	case PatternRamp:
-		return generateRamp(rng, opts.Start, opts.Count, userKeys, opts.Endpoints, opts.Duration), nil
+		return generateRamp(rng, cfg.Start, cfg.Count, userKeys, cfg.Endpoints, cfg.Duration), nil
 	default: // steady and unknown patterns default to steady behavior.
-		return generateSteady(rng, opts.Start, opts.Count, userKeys, opts.Endpoints, opts.Duration), nil
+		return generateSteady(rng, cfg.Start, cfg.Count, userKeys, cfg.Endpoints, cfg.Duration), nil
 	}
 }
 

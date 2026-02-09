@@ -11,7 +11,7 @@ func TestGenerateTraffic_AllPatterns(t *testing.T) {
 
 	for _, p := range patterns {
 		t.Run(p, func(t *testing.T) {
-			records, err := GenerateTraffic(Options{
+			records, err := GenerateTraffic(&Options{
 				Count:    32,
 				Keys:     3,
 				Duration: 2 * time.Minute,
@@ -36,7 +36,7 @@ func TestGenerateTraffic_AllPatterns(t *testing.T) {
 
 func TestGenerateTraffic_UnknownPatternFallsBackToSteady(t *testing.T) {
 	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	records, err := GenerateTraffic(Options{
+	records, err := GenerateTraffic(&Options{
 		Count:    10,
 		Keys:     2,
 		Duration: 10 * time.Second,
@@ -55,7 +55,7 @@ func TestGenerateTraffic_UnknownPatternFallsBackToSteady(t *testing.T) {
 }
 
 func TestGenerateTraffic_InvalidOptions(t *testing.T) {
-	_, err := GenerateTraffic(Options{
+	_, err := GenerateTraffic(&Options{
 		Count:    0,
 		Keys:     1,
 		Duration: time.Minute,
@@ -65,7 +65,7 @@ func TestGenerateTraffic_InvalidOptions(t *testing.T) {
 		t.Fatal("expected error for count=0")
 	}
 
-	_, err = GenerateTraffic(Options{
+	_, err = GenerateTraffic(&Options{
 		Count:    1,
 		Keys:     0,
 		Duration: time.Minute,
@@ -75,7 +75,7 @@ func TestGenerateTraffic_InvalidOptions(t *testing.T) {
 		t.Fatal("expected error for keys=0")
 	}
 
-	_, err = GenerateTraffic(Options{
+	_, err = GenerateTraffic(&Options{
 		Count:    1,
 		Keys:     1,
 		Duration: 0,
@@ -83,5 +83,12 @@ func TestGenerateTraffic_InvalidOptions(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for duration=0")
+	}
+}
+
+func TestGenerateTraffic_NilOptions(t *testing.T) {
+	_, err := GenerateTraffic(nil)
+	if err == nil {
+		t.Fatal("expected error for nil options")
 	}
 }
