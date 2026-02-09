@@ -1,24 +1,34 @@
 package storage
 
-import (
-	"context"
-	"testing"
-	"time"
+import "testing"
 
-	"github.com/SmitUplenchwar2687/Chrono/pkg/clock"
-)
+func TestNewStorage_DefaultsToMemory(t *testing.T) {
+	s, err := NewStorage(Config{})
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+	defer s.Close()
 
-func TestMemoryStorageSetGet(t *testing.T) {
-	s := NewMemoryStorage(clock.NewVirtualClock(time.Now()))
-	err := s.Set(context.Background(), "k1", []byte("v1"), 0)
-	if err != nil {
-		t.Fatalf("Set() failed: %v", err)
+	if _, ok := s.(*MemoryStorage); !ok {
+		t.Fatalf("NewStorage() type = %T, want *MemoryStorage", s)
 	}
-	got, err := s.Get(context.Background(), "k1")
-	if err != nil {
-		t.Fatalf("Get() failed: %v", err)
+}
+
+func TestNewStorage_UnknownBackend(t *testing.T) {
+	_, err := NewStorage(Config{Backend: "nope"})
+	if err == nil {
+		t.Fatal("expected error for unknown backend")
 	}
-	if string(got) != "v1" {
-		t.Fatalf("Get() = %q, want %q", string(got), "v1")
+}
+
+func TestNewStorage_PlaceholderBackends(t *testing.T) {
+	_, err := NewStorage(Config{Backend: BackendRedis})
+	if err == nil {
+		t.Fatal("expected redis not-implemented error")
+	}
+
+	_, err = NewStorage(Config{Backend: BackendCRDT})
+	if err == nil {
+		t.Fatal("expected crdt not-implemented error")
 	}
 }
