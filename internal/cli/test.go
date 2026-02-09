@@ -11,20 +11,23 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/SmitUplenchwar2687/Chrono/internal/clock"
+	"github.com/SmitUplenchwar2687/Chrono/internal/config"
 	"github.com/SmitUplenchwar2687/Chrono/internal/limiter"
 )
 
 func newTestCmd() *cobra.Command {
 	var (
-		algorithm    string
-		rate         int
-		window       time.Duration
-		burst        int
-		requests     int
-		keys         []string
-		fastForward  time.Duration
-		outputJSON   bool
+		algorithm   string
+		rate        int
+		window      time.Duration
+		burst       int
+		requests    int
+		keys        []string
+		fastForward time.Duration
+		outputJSON  bool
+		configFile  string
 	)
+	storageOpts := defaultStorageOptions()
 
 	cmd := &cobra.Command{
 		Use:   "test",
@@ -39,14 +42,44 @@ then sends another batch to show how limits reset.`,
   chrono test --algorithm sliding_window --rate 5 --window 30s --fast-forward 1m
   chrono test --keys user1,user2 --requests 15 --rate 10 --window 1m --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if configFile != "" {
+				cfg, err := config.LoadFile(configFile)
+				if err != nil {
+					return err
+				}
+				if err := cfg.Validate(); err != nil {
+					return fmt.Errorf("invalid config: %w", err)
+				}
+				if !cmd.Flags().Changed("algorithm") {
+					algorithm = string(cfg.Limiter.Algorithm)
+				}
+				if !cmd.Flags().Changed("rate") {
+					rate = cfg.Limiter.Rate
+				}
+				if !cmd.Flags().Changed("window") {
+					window = cfg.Limiter.Window
+				}
+				if !cmd.Flags().Changed("burst") {
+					burst = cfg.Limiter.Burst
+				}
+				storageOpts.applyConfigIfUnset(cmd, &cfg.Storage)
+			}
+			if err := storageOpts.normalize(); err != nil {
+				return err
+			}
+
 			if len(keys) == 0 {
 				keys = []string{"test-user"}
 			}
 
 			vc := clock.NewVirtualClock(time.Now().Truncate(time.Second))
-			lim, err := createLimiter(limiter.Algorithm(algorithm), rate, window, burst, vc)
+			storageCfg := storageOpts.toConfig(burst)
+			lim, err := createServerLimiter(limiter.Algorithm(algorithm), rate, window, burst, vc, &storageCfg)
 			if err != nil {
 				return err
+			}
+			if c, ok := lim.(interface{ Close() error }); ok {
+				defer func() { _ = c.Close() }()
 			}
 
 			result := runTest(vc, lim, keys, requests, fastForward)
@@ -66,9 +99,11 @@ then sends another batch to show how limits reset.`,
 	cmd.Flags().IntVar(&rate, "rate", 10, "requests allowed per window")
 	cmd.Flags().DurationVar(&window, "window", time.Minute, "rate limit window duration")
 	cmd.Flags().IntVar(&burst, "burst", 0, "max burst size (token_bucket only)")
+	storageOpts.addFlags(cmd)
 	cmd.Flags().IntVar(&requests, "requests", 15, "number of requests to send per batch")
 	cmd.Flags().StringSliceVar(&keys, "keys", nil, "comma-separated rate limit keys to test")
 	cmd.Flags().DurationVar(&fastForward, "fast-forward", 0, "time to fast-forward between batches")
+	cmd.Flags().StringVar(&configFile, "config", "", "path to JSON config file (flags override config values)")
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "output results as JSON")
 
 	return cmd
@@ -76,11 +111,11 @@ then sends another batch to show how limits reset.`,
 
 // TestResult captures the full output of a test run.
 type TestResult struct {
-	Algorithm   string            `json:"algorithm"`
-	Rate        int               `json:"rate"`
-	Window      string            `json:"window"`
-	FastForward string            `json:"fast_forward,omitempty"`
-	Batches     []BatchResult     `json:"batches"`
+	Algorithm   string             `json:"algorithm"`
+	Rate        int                `json:"rate"`
+	Window      string             `json:"window"`
+	FastForward string             `json:"fast_forward,omitempty"`
+	Batches     []BatchResult      `json:"batches"`
 	Summary     map[string]Summary `json:"summary"`
 }
 
@@ -93,8 +128,8 @@ type BatchResult struct {
 
 // DecisionRecord is a single rate limit check result.
 type DecisionRecord struct {
-	Key       string           `json:"key"`
-	Decision  limiter.Decision `json:"decision"`
+	Key      string           `json:"key"`
+	Decision limiter.Decision `json:"decision"`
 }
 
 // Summary aggregates stats per key.

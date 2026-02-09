@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -135,5 +137,39 @@ func TestNewTestCmd_InvalidAlgorithm(t *testing.T) {
 	cmd.SetArgs([]string{"test", "--algorithm", "bogus"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected error for invalid algorithm")
+	}
+}
+
+func TestNewTestCmd_RedisRequiresSlidingWindow(t *testing.T) {
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"test", "--storage", "redis", "--algorithm", "token_bucket", "--requests", "1", "--json"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for redis with token_bucket")
+	}
+}
+
+func TestNewTestCmd_LoadsConfigFile(t *testing.T) {
+	content := `{
+  "limiter": {
+    "algorithm": "fixed_window",
+    "rate": 2,
+    "window": "1m"
+  },
+  "storage": {
+    "backend": "memory",
+    "memory": {
+      "cleanup_interval": "1m"
+    }
+  }
+}`
+	path := filepath.Join(t.TempDir(), "chrono.json")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"test", "--config", path, "--requests", "2", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("test command with config failed: %v", err)
 	}
 }

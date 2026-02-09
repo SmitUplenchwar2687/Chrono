@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	chronoclock "github.com/SmitUplenchwar2687/Chrono/pkg/clock"
 )
 
 const (
@@ -41,23 +43,25 @@ type Config struct {
 
 // RedisConfig is reserved for phase 2 Redis implementation.
 type RedisConfig struct {
-	Host         string        `json:"host" yaml:"host"`
-	Port         int           `json:"port" yaml:"port"`
-	Password     string        `json:"password" yaml:"password"`
-	DB           int           `json:"db" yaml:"db"`
-	Cluster      bool          `json:"cluster" yaml:"cluster"`
-	ClusterNodes []string      `json:"cluster_nodes,omitempty" yaml:"cluster_nodes,omitempty"`
-	PoolSize     int           `json:"pool_size" yaml:"pool_size"`
-	MaxRetries   int           `json:"max_retries" yaml:"max_retries"`
-	DialTimeout  time.Duration `json:"dial_timeout" yaml:"dial_timeout"`
+	Host         string            `json:"host" yaml:"host"`
+	Port         int               `json:"port" yaml:"port"`
+	Password     string            `json:"password" yaml:"password"`
+	DB           int               `json:"db" yaml:"db"`
+	Cluster      bool              `json:"cluster" yaml:"cluster"`
+	ClusterNodes []string          `json:"cluster_nodes,omitempty" yaml:"cluster_nodes,omitempty"`
+	PoolSize     int               `json:"pool_size" yaml:"pool_size"`
+	MaxRetries   int               `json:"max_retries" yaml:"max_retries"`
+	DialTimeout  time.Duration     `json:"dial_timeout" yaml:"dial_timeout"`
+	Clock        chronoclock.Clock `json:"-" yaml:"-"`
 }
 
 // CRDTConfig is reserved for phase 2 experimental CRDT implementation.
 type CRDTConfig struct {
-	NodeID         string        `json:"node_id" yaml:"node_id"`
-	BindAddr       string        `json:"bind_addr" yaml:"bind_addr"`
-	Peers          []string      `json:"peers" yaml:"peers"`
-	GossipInterval time.Duration `json:"gossip_interval" yaml:"gossip_interval"`
+	NodeID         string            `json:"node_id" yaml:"node_id"`
+	BindAddr       string            `json:"bind_addr" yaml:"bind_addr"`
+	Peers          []string          `json:"peers" yaml:"peers"`
+	GossipInterval time.Duration     `json:"gossip_interval" yaml:"gossip_interval"`
+	Clock          chronoclock.Clock `json:"-" yaml:"-"`
 }
 
 // NewStorage constructs the configured backend.

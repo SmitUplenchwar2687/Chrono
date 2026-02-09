@@ -4,11 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -24,29 +21,15 @@ import (
 
 func newServerCmd() *cobra.Command {
 	var (
-		addr                  string
-		algorithm             string
-		rate                  int
-		window                time.Duration
-		burst                 int
-		recordFile            string
-		configFile            string
-		storageBackend        string
-		memoryCleanupInterval time.Duration
-		redisHost             string
-		redisPort             int
-		redisPassword         string
-		redisDB               int
-		redisCluster          bool
-		redisClusterNodes     []string
-		redisPoolSize         int
-		redisMaxRetries       int
-		redisDialTimeout      time.Duration
-		crdtNodeID            string
-		crdtBindAddr          string
-		crdtPeers             []string
-		crdtGossipInterval    time.Duration
+		addr       string
+		algorithm  string
+		rate       int
+		window     time.Duration
+		burst      int
+		recordFile string
+		configFile string
 	)
+	storageOpts := defaultStorageOptions()
 
 	cmd := &cobra.Command{
 		Use:   "server",
@@ -94,85 +77,13 @@ Endpoints:
 				if !cmd.Flags().Changed("burst") {
 					burst = cfg.Limiter.Burst
 				}
-				if !cmd.Flags().Changed("storage") {
-					storageBackend = cfg.Storage.Backend
-				}
-				if !cmd.Flags().Changed("storage-memory-cleanup-interval") {
-					memoryCleanupInterval = cfg.Storage.Memory.CleanupInterval
-				}
-				if !cmd.Flags().Changed("redis-host") {
-					redisHost = cfg.Storage.Redis.Host
-				}
-				if !cmd.Flags().Changed("redis-port") {
-					redisPort = cfg.Storage.Redis.Port
-				}
-				if !cmd.Flags().Changed("redis-password") {
-					redisPassword = cfg.Storage.Redis.Password
-				}
-				if !cmd.Flags().Changed("redis-db") {
-					redisDB = cfg.Storage.Redis.DB
-				}
-				if !cmd.Flags().Changed("redis-cluster") {
-					redisCluster = cfg.Storage.Redis.Cluster
-				}
-				if !cmd.Flags().Changed("redis-cluster-nodes") {
-					redisClusterNodes = cfg.Storage.Redis.ClusterNodes
-				}
-				if !cmd.Flags().Changed("redis-pool-size") {
-					redisPoolSize = cfg.Storage.Redis.PoolSize
-				}
-				if !cmd.Flags().Changed("redis-max-retries") {
-					redisMaxRetries = cfg.Storage.Redis.MaxRetries
-				}
-				if !cmd.Flags().Changed("redis-dial-timeout") {
-					redisDialTimeout = cfg.Storage.Redis.DialTimeout
-				}
-				if !cmd.Flags().Changed("crdt-node-id") {
-					crdtNodeID = cfg.Storage.CRDT.NodeID
-				}
-				if !cmd.Flags().Changed("crdt-bind-addr") {
-					crdtBindAddr = cfg.Storage.CRDT.BindAddr
-				}
-				if !cmd.Flags().Changed("crdt-peers") {
-					crdtPeers = cfg.Storage.CRDT.Peers
-				}
-				if !cmd.Flags().Changed("crdt-gossip-interval") {
-					crdtGossipInterval = cfg.Storage.CRDT.GossipInterval
-				}
+				storageOpts.applyConfigIfUnset(cmd, &cfg.Storage)
 			}
 
-			var err error
-			if !redisCluster {
-				redisHost, redisPort, err = normalizeRedisHostPort(redisHost, redisPort)
-				if err != nil {
-					return err
-				}
+			if err := storageOpts.normalize(); err != nil {
+				return err
 			}
-
-			storageCfg := config.StorageConfig{
-				Backend: storageBackend,
-				Memory: config.StorageMemoryConfig{
-					CleanupInterval: memoryCleanupInterval,
-					Burst:           burst,
-				},
-				Redis: config.StorageRedisConfig{
-					Host:         redisHost,
-					Port:         redisPort,
-					Password:     redisPassword,
-					DB:           redisDB,
-					Cluster:      redisCluster,
-					ClusterNodes: append([]string(nil), redisClusterNodes...),
-					PoolSize:     redisPoolSize,
-					MaxRetries:   redisMaxRetries,
-					DialTimeout:  redisDialTimeout,
-				},
-				CRDT: config.StorageCRDTConfig{
-					NodeID:         crdtNodeID,
-					BindAddr:       crdtBindAddr,
-					Peers:          append([]string(nil), crdtPeers...),
-					GossipInterval: crdtGossipInterval,
-				},
-			}
+			storageCfg := storageOpts.toConfig(burst)
 
 			clk := clock.NewRealClock()
 			lim, err := createServerLimiter(limiter.Algorithm(algorithm), rate, window, burst, clk, &storageCfg)
@@ -233,21 +144,7 @@ Endpoints:
 	cmd.Flags().IntVar(&rate, "rate", 10, "requests allowed per window")
 	cmd.Flags().DurationVar(&window, "window", time.Minute, "rate limit window duration")
 	cmd.Flags().IntVar(&burst, "burst", 0, "max burst size (token_bucket only, 0 = same as rate)")
-	cmd.Flags().StringVar(&storageBackend, "storage", chronostorage.BackendMemory, "storage backend (memory, redis, crdt)")
-	cmd.Flags().DurationVar(&memoryCleanupInterval, "storage-memory-cleanup-interval", time.Minute, "cleanup interval for memory storage backend")
-	cmd.Flags().StringVar(&redisHost, "redis-host", "localhost", "redis host (or host:port)")
-	cmd.Flags().IntVar(&redisPort, "redis-port", 6379, "redis port")
-	cmd.Flags().StringVar(&redisPassword, "redis-password", "", "redis password")
-	cmd.Flags().IntVar(&redisDB, "redis-db", 0, "redis database index")
-	cmd.Flags().BoolVar(&redisCluster, "redis-cluster", false, "enable redis cluster mode")
-	cmd.Flags().StringSliceVar(&redisClusterNodes, "redis-cluster-nodes", nil, "redis cluster nodes host:port list")
-	cmd.Flags().IntVar(&redisPoolSize, "redis-pool-size", 20, "redis connection pool size")
-	cmd.Flags().IntVar(&redisMaxRetries, "redis-max-retries", 3, "redis max retries")
-	cmd.Flags().DurationVar(&redisDialTimeout, "redis-dial-timeout", 5*time.Second, "redis dial timeout")
-	cmd.Flags().StringVar(&crdtNodeID, "crdt-node-id", "", "CRDT node id (required for crdt backend)")
-	cmd.Flags().StringVar(&crdtBindAddr, "crdt-bind-addr", ":8081", "CRDT bind address")
-	cmd.Flags().StringSliceVar(&crdtPeers, "crdt-peers", nil, "CRDT peer addresses")
-	cmd.Flags().DurationVar(&crdtGossipInterval, "crdt-gossip-interval", time.Second, "CRDT gossip interval")
+	storageOpts.addFlags(cmd)
 	cmd.Flags().StringVar(&recordFile, "record", "", "record traffic to JSON file (exported on shutdown)")
 	cmd.Flags().StringVar(&configFile, "config", "", "path to JSON config file (flags override config values)")
 
@@ -294,6 +191,7 @@ func createServerLimiter(
 			PoolSize:     storageCfg.Redis.PoolSize,
 			MaxRetries:   storageCfg.Redis.MaxRetries,
 			DialTimeout:  storageCfg.Redis.DialTimeout,
+			Clock:        clk,
 		}
 	case chronostorage.BackendCRDT:
 		if algo != limiter.AlgorithmSlidingWindow {
@@ -304,6 +202,7 @@ func createServerLimiter(
 			BindAddr:       storageCfg.CRDT.BindAddr,
 			Peers:          append([]string(nil), storageCfg.CRDT.Peers...),
 			GossipInterval: storageCfg.CRDT.GossipInterval,
+			Clock:          clk,
 		}
 	default:
 		return nil, fmt.Errorf("unknown storage backend %q", backend)
@@ -320,30 +219,6 @@ func createServerLimiter(
 		return nil, err
 	}
 	return lim, nil
-}
-
-func normalizeRedisHostPort(host string, port int) (string, int, error) {
-	if strings.Contains(host, ":") {
-		h, p, err := net.SplitHostPort(host)
-		if err != nil {
-			return "", 0, fmt.Errorf("invalid --redis-host value %q: %w", host, err)
-		}
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			return "", 0, fmt.Errorf("invalid redis port in --redis-host %q: %w", host, err)
-		}
-		host = h
-		port = n
-	}
-
-	if host == "" {
-		return "", 0, fmt.Errorf("redis host cannot be empty")
-	}
-	if port <= 0 {
-		return "", 0, fmt.Errorf("redis port must be positive, got %d", port)
-	}
-
-	return host, port, nil
 }
 
 func createLimiter(algo limiter.Algorithm, rate int, window time.Duration, burst int, clk clock.Clock) (limiter.Limiter, error) {

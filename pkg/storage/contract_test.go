@@ -28,6 +28,21 @@ func TestStorageContract(t *testing.T) {
 			},
 		},
 		{
+			name: "crdt",
+			new: func(t *testing.T) (Storage, func()) {
+				t.Helper()
+				s, err := NewCRDTStorage(&CRDTConfig{
+					NodeID:         "contract-node",
+					BindAddr:       "127.0.0.1:0",
+					GossipInterval: 100 * time.Millisecond,
+				})
+				if err != nil {
+					t.Fatalf("NewCRDTStorage() error = %v", err)
+				}
+				return s, func() { _ = s.Close() }
+			},
+		},
+		{
 			name: "redis",
 			new: func(t *testing.T) (Storage, func()) {
 				t.Helper()

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	chronoclock "github.com/SmitUplenchwar2687/Chrono/pkg/clock"
 )
 
 const defaultCRDTGossipInterval = time.Second
@@ -101,6 +103,7 @@ type CRDTStorage struct {
 	peers  []string
 
 	gossipInterval time.Duration
+	clock          chronoclock.Clock
 
 	mu       sync.RWMutex
 	counters map[string]*GCounter
@@ -136,6 +139,7 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 		nodeID:         cfg.NodeID,
 		peers:          append([]string(nil), cfg.Peers...),
 		gossipInterval: interval,
+		clock:          cfg.Clock,
 		counters:       make(map[string]*GCounter),
 		meta:           make(map[string]counterMeta),
 		client: &http.Client{
@@ -143,6 +147,9 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 		},
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
+	}
+	if s.clock == nil {
+		s.clock = chronoclock.NewRealClock()
 	}
 
 	log.Printf("WARNING: CRDT storage is EXPERIMENTAL - known limitations:")
@@ -238,7 +245,7 @@ func (s *CRDTStorage) CheckLimit(ctx context.Context, key string, limit int, win
 		return false, 0, time.Time{}, fmt.Errorf("window must be positive, got %s", window)
 	}
 
-	now := time.Now()
+	now := s.clock.Now()
 	bucketKey, resetAt := s.bucketKey(key, window, now)
 
 	s.mu.Lock()
@@ -351,7 +358,7 @@ func (s *CRDTStorage) snapshotCounters() map[string]map[string]int64 {
 }
 
 func (s *CRDTStorage) cleanupExpired() {
-	now := time.Now()
+	now := s.clock.Now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

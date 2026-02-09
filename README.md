@@ -143,6 +143,7 @@ chrono replay --file traffic.json --algorithm sliding_window --rate 5 --window 3
 ```bash
 chrono test --rate 10 --window 1m --requests 20 --fast-forward 1h
 chrono test --algorithm sliding_window --keys user1,user2 --json
+chrono test --storage redis --algorithm sliding_window --rate 100 --window 1m --requests 50
 ```
 
 | Flag | Default | Description |
@@ -154,6 +155,8 @@ chrono test --algorithm sliding_window --keys user1,user2 --json
 | `--requests` | `15` | Requests per batch |
 | `--keys` | `test-user` | Comma-separated keys to test |
 | `--fast-forward` | `0` | Time to skip between batches |
+| `--storage` | `memory` | Storage backend (`memory`, `redis`, `crdt`) |
+| `--config` | (none) | JSON config path (flags override config values) |
 | `--json` | `false` | Output as JSON |
 
 ### `chrono server`
@@ -235,6 +238,7 @@ Example config (`chrono.json`) with Redis:
 ```bash
 chrono replay --file traffic.json --speed 100 --algorithm token_bucket
 chrono replay --file traffic.json --keys user1 --endpoints /api --json
+chrono replay --file traffic.json --storage redis --algorithm sliding_window --rate 100 --window 1m
 ```
 
 | Flag | Default | Description |
@@ -243,7 +247,31 @@ chrono replay --file traffic.json --keys user1 --endpoints /api --json
 | `--speed` | `0` | Replay speed (0=instant, 1=real-time, 10=10x) |
 | `--keys` | (all) | Filter by keys |
 | `--endpoints` | (all) | Filter by endpoint patterns |
+| `--storage` | `memory` | Storage backend (`memory`, `redis`, `crdt`) |
+| `--config` | (none) | JSON config path (flags override config values) |
 | `--json` | `false` | Output as JSON |
+
+All storage flags from `chrono server` are also available on `chrono test` and `chrono replay`.
+
+## Storage Backends
+
+| Backend | Recommended use | Algorithm support | Consistency | Notes |
+|---------|------------------|-------------------|-------------|-------|
+| `memory` | Local dev, unit tests, single-instance runs | `token_bucket`, `sliding_window`, `fixed_window` | Strong (single process) | Fastest and simplest; not shared across processes |
+| `redis` | Production distributed deployments | `sliding_window` | Strong per-key atomicity (Lua) | Best production default; supports shared limits across instances |
+| `crdt` | Multi-node experiments and research | `sliding_window` (approximate) | Eventual consistency | Experimental, no persistence, no vector clocks |
+
+When to choose:
+
+- Choose `memory` when you need time-travel-heavy local tests and no shared state.
+- Choose `redis` when multiple app instances must enforce one global limit.
+- Choose `crdt` only for experiments where temporary drift is acceptable.
+
+Performance characteristics:
+
+- `memory`: lowest latency, process-local only.
+- `redis`: network round-trip + Redis command latency, horizontally scalable.
+- `crdt`: local write fast, convergence depends on gossip interval and peer health.
 
 ## Algorithms
 

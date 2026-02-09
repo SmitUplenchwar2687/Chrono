@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/SmitUplenchwar2687/Chrono/internal/clock"
+	"github.com/SmitUplenchwar2687/Chrono/internal/config"
 	"github.com/SmitUplenchwar2687/Chrono/internal/limiter"
 	"github.com/SmitUplenchwar2687/Chrono/internal/replay"
 )
@@ -26,7 +27,9 @@ func newReplayCmd() *cobra.Command {
 		keys       []string
 		endpoints  []string
 		outputJSON bool
+		configFile string
 	)
+	storageOpts := defaultStorageOptions()
 
 	cmd := &cobra.Command{
 		Use:   "replay",
@@ -46,6 +49,31 @@ Speed: 0 = instant, 1 = real-time, 10 = 10x, 100 = 100x`,
 			if file == "" {
 				return fmt.Errorf("--file is required")
 			}
+			if configFile != "" {
+				cfg, err := config.LoadFile(configFile)
+				if err != nil {
+					return err
+				}
+				if err := cfg.Validate(); err != nil {
+					return fmt.Errorf("invalid config: %w", err)
+				}
+				if !cmd.Flags().Changed("algorithm") {
+					algorithm = string(cfg.Limiter.Algorithm)
+				}
+				if !cmd.Flags().Changed("rate") {
+					rate = cfg.Limiter.Rate
+				}
+				if !cmd.Flags().Changed("window") {
+					window = cfg.Limiter.Window
+				}
+				if !cmd.Flags().Changed("burst") {
+					burst = cfg.Limiter.Burst
+				}
+				storageOpts.applyConfigIfUnset(cmd, &cfg.Storage)
+			}
+			if err := storageOpts.normalize(); err != nil {
+				return err
+			}
 
 			f, err := os.Open(file)
 			if err != nil {
@@ -54,9 +82,13 @@ Speed: 0 = instant, 1 = real-time, 10 = 10x, 100 = 100x`,
 			defer f.Close()
 
 			vc := clock.NewVirtualClock(time.Now().Truncate(time.Second))
-			lim, err := createLimiter(limiter.Algorithm(algorithm), rate, window, burst, vc)
+			storageCfg := storageOpts.toConfig(burst)
+			lim, err := createServerLimiter(limiter.Algorithm(algorithm), rate, window, burst, vc, &storageCfg)
 			if err != nil {
 				return err
+			}
+			if c, ok := lim.(interface{ Close() error }); ok {
+				defer func() { _ = c.Close() }()
 			}
 
 			filter := &replay.Filter{
@@ -139,9 +171,11 @@ Speed: 0 = instant, 1 = real-time, 10 = 10x, 100 = 100x`,
 	cmd.Flags().IntVar(&rate, "rate", 10, "requests allowed per window")
 	cmd.Flags().DurationVar(&window, "window", time.Minute, "rate limit window duration")
 	cmd.Flags().IntVar(&burst, "burst", 0, "max burst size (token_bucket only)")
+	storageOpts.addFlags(cmd)
 	cmd.Flags().Float64Var(&speed, "speed", 0, "replay speed (0=instant, 1=real-time, 10=10x)")
 	cmd.Flags().StringSliceVar(&keys, "keys", nil, "filter by keys (comma-separated)")
 	cmd.Flags().StringSliceVar(&endpoints, "endpoints", nil, "filter by endpoints (comma-separated)")
+	cmd.Flags().StringVar(&configFile, "config", "", "path to JSON config file (flags override config values)")
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "output results as JSON")
 
 	return cmd

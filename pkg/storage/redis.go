@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	chronoclock "github.com/SmitUplenchwar2687/Chrono/pkg/clock"
 )
 
 const (
@@ -55,6 +57,7 @@ return {allowed, remaining, reset}
 type RedisStorage struct {
 	client redis.UniversalClient
 	script *redis.Script
+	clock  chronoclock.Clock
 
 	memberSeq atomic.Uint64
 
@@ -77,6 +80,7 @@ func NewRedisStorage(cfg *RedisConfig) (*RedisStorage, error) {
 	s := &RedisStorage{
 		client: client,
 		script: redisSlidingWindowScript,
+		clock:  conf.Clock,
 	}
 
 	if err := s.pingWithRetry(context.Background(), conf.MaxRetries); err != nil {
@@ -104,7 +108,7 @@ func (s *RedisStorage) CheckLimit(ctx context.Context, key string, limit int, wi
 		return false, 0, time.Time{}, fmt.Errorf("window must be at least 1ms, got %s", window)
 	}
 
-	now := time.Now()
+	now := s.clock.Now()
 	nowMS := now.UnixMilli()
 	member := fmt.Sprintf("%d-%d", now.UnixNano(), s.memberSeq.Add(1))
 	redisKey := redisRateLimitPrefix + key
@@ -191,6 +195,9 @@ func normalizeRedisConfig(cfg *RedisConfig) (*RedisConfig, error) {
 	}
 	if conf.DialTimeout <= 0 {
 		conf.DialTimeout = defaultRedisDialTimeout
+	}
+	if conf.Clock == nil {
+		conf.Clock = chronoclock.NewRealClock()
 	}
 
 	if conf.Cluster {
