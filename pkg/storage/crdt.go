@@ -288,7 +288,8 @@ func (s *CRDTStorage) gossipLoop() {
 }
 
 func (s *CRDTStorage) gossipOnce() {
-	if len(s.peers) == 0 {
+	peers := s.snapshotPeers()
+	if len(peers) == 0 {
 		return
 	}
 
@@ -302,7 +303,7 @@ func (s *CRDTStorage) gossipOnce() {
 		return
 	}
 
-	for _, peer := range s.peers {
+	for _, peer := range peers {
 		url := normalizePeerURL(peer) + "/gossip"
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
@@ -319,6 +320,15 @@ func (s *CRDTStorage) gossipOnce() {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+}
+
+func (s *CRDTStorage) snapshotPeers() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]string, len(s.peers))
+	copy(out, s.peers)
+	return out
 }
 
 func (s *CRDTStorage) snapshotCounters() map[string]map[string]int64 {
