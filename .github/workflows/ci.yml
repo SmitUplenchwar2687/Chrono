@@ -26,7 +26,9 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test ./... -race -count=1 -timeout 60s
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: go test ./... -race -count=1 -timeout 180s
 
       - name: Build
         run: go build -o bin/chrono ./cmd/chrono

@@ -24,7 +24,18 @@ func TestNewStorage_UnknownBackend(t *testing.T) {
 func TestNewStorage_PlaceholderBackends(t *testing.T) {
 	_, err := NewStorage(Config{Backend: BackendRedis})
 	if err == nil {
-		t.Fatal("expected redis not-implemented error")
+		t.Fatal("expected redis config validation error")
+	}
+
+	_, err = NewStorage(Config{
+		Backend: BackendRedis,
+		Redis: &RedisConfig{
+			Host: "127.0.0.1",
+			Port: 1,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected redis connectivity/config error for invalid endpoint")
 	}
 
 	_, err = NewStorage(Config{Backend: BackendCRDT})

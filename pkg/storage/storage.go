@@ -72,7 +72,7 @@ func NewStorage(cfg Config) (Storage, error) {
 	case BackendMemory:
 		return NewMemoryStorage(cfg.Memory)
 	case BackendRedis:
-		return nil, fmt.Errorf("redis backend is not implemented yet")
+		return NewRedisStorage(cfg.Redis)
 	case BackendCRDT:
 		return nil, fmt.Errorf("crdt backend is not implemented yet")
 	default:
