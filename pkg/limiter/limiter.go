@@ -28,3 +28,6 @@ type SlidingWindow = internallimiter.SlidingWindow
 
 // FixedWindow implements the fixed window counter rate limiting algorithm.
 type FixedWindow = internallimiter.FixedWindow
+
+// StorageLimiter adapts pkg/storage backends to the Limiter interface.
+type StorageLimiter = internallimiter.StorageLimiter
