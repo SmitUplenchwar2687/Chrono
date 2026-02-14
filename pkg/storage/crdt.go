@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,7 +74,8 @@ func (g *GCounter) Snapshot() map[string]int64 {
 }
 
 // AllowBelowLimit checks total and increments atomically if still below limit.
-func (g *GCounter) AllowBelowLimit(nodeID string, limit int) (bool, int64) {
+// It returns allow/deny, total count after the operation, and this node's count.
+func (g *GCounter) AllowBelowLimit(nodeID string, limit int) (bool, int64, int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -82,19 +84,27 @@ func (g *GCounter) AllowBelowLimit(nodeID string, limit int) (bool, int64) {
 		total += c
 	}
 	if total >= int64(limit) {
-		return false, total
+		return false, total, g.counts[nodeID]
 	}
 	g.counts[nodeID]++
-	return true, total + 1
+	return true, total + 1, g.counts[nodeID]
 }
 
 type counterMeta struct {
 	resetAt time.Time
 }
 
+type gossipBucket struct {
+	Counts  map[string]int64 `json:"counts"`
+	Version map[string]int64 `json:"version,omitempty"`
+	ResetAt time.Time        `json:"reset_at,omitempty"`
+}
+
 type gossipPayload struct {
-	NodeID   string                      `json:"node_id"`
-	Counters map[string]map[string]int64 `json:"counters"`
+	NodeID  string                  `json:"node_id"`
+	Buckets map[string]gossipBucket `json:"buckets,omitempty"`
+	// Legacy field for backward compatibility with older nodes.
+	Counters map[string]map[string]int64 `json:"counters,omitempty"`
 }
 
 // CRDTStorage is an experimental CRDT-backed storage backend.
@@ -107,6 +117,7 @@ type CRDTStorage struct {
 
 	mu       sync.RWMutex
 	counters map[string]*GCounter
+	vectors  map[string]map[string]int64
 	meta     map[string]counterMeta
 
 	httpServer *http.Server
@@ -141,6 +152,7 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 		gossipInterval: interval,
 		clock:          cfg.Clock,
 		counters:       make(map[string]*GCounter),
+		vectors:        make(map[string]map[string]int64),
 		meta:           make(map[string]counterMeta),
 		client: &http.Client{
 			Timeout: 3 * time.Second,
@@ -153,7 +165,7 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 	}
 
 	log.Printf("WARNING: CRDT storage is EXPERIMENTAL - known limitations:")
-	log.Printf("WARNING: - No vector clocks (may have counter drift)")
+	log.Printf("WARNING: - Eventual consistency (temporary drift is expected)")
 	log.Printf("WARNING: - Simple HTTP polling gossip (not production-grade)")
 	log.Printf("WARNING: - In-memory only (no persistence)")
 	log.Printf("WARNING: - Use Redis for production deployments")
@@ -206,24 +218,72 @@ func (s *CRDTStorage) handleGossip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mergeSnapshot(payload.Counters)
+	s.mergeSnapshot(payloadBuckets(payload))
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *CRDTStorage) mergeSnapshot(snapshot map[string]map[string]int64) {
+func payloadBuckets(p gossipPayload) map[string]gossipBucket {
+	if len(p.Buckets) > 0 {
+		return p.Buckets
+	}
+	if len(p.Counters) == 0 {
+		return nil
+	}
+
+	out := make(map[string]gossipBucket, len(p.Counters))
+	for bucketKey, nodeCounts := range p.Counters {
+		out[bucketKey] = gossipBucket{
+			Counts:  cloneVectorClock(nodeCounts),
+			Version: cloneVectorClock(nodeCounts),
+		}
+	}
+	return out
+}
+
+func (s *CRDTStorage) mergeSnapshot(snapshot map[string]gossipBucket) {
 	if len(snapshot) == 0 {
 		return
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for bucketKey, nodeCounts := range snapshot {
+
+	for bucketKey, incoming := range snapshot {
+		if len(incoming.Counts) == 0 {
+			continue
+		}
+
 		counter := s.counters[bucketKey]
 		if counter == nil {
 			counter = NewGCounter()
 			s.counters[bucketKey] = counter
 		}
-		counter.Merge(nodeCounts)
+
+		localVersion := s.vectors[bucketKey]
+		incomingVersion := incoming.Version
+		if len(incomingVersion) == 0 {
+			incomingVersion = incoming.Counts
+		}
+
+		relation := compareVectorClock(localVersion, incomingVersion)
+		if relation != localDominates && relation != localEqualsIncoming {
+			counter.Merge(incoming.Counts)
+			localVersion = mergeVectorClock(localVersion, incomingVersion)
+			s.vectors[bucketKey] = localVersion
+		}
+
+		resetAt := incoming.ResetAt
+		if resetAt.IsZero() {
+			if parsed, ok := parseResetAtFromBucketKey(bucketKey); ok {
+				resetAt = parsed
+			}
+		}
+		if !resetAt.IsZero() {
+			meta := s.meta[bucketKey]
+			if meta.resetAt.IsZero() || resetAt.After(meta.resetAt) {
+				s.meta[bucketKey] = counterMeta{resetAt: resetAt}
+			}
+		}
 	}
 }
 
@@ -254,13 +314,25 @@ func (s *CRDTStorage) CheckLimit(ctx context.Context, key string, limit int, win
 		counter = NewGCounter()
 		s.counters[bucketKey] = counter
 	}
-	s.meta[bucketKey] = counterMeta{resetAt: resetAt}
+	if s.vectors[bucketKey] == nil {
+		s.vectors[bucketKey] = make(map[string]int64)
+	}
+	meta := s.meta[bucketKey]
+	if meta.resetAt.IsZero() || resetAt.After(meta.resetAt) {
+		s.meta[bucketKey] = counterMeta{resetAt: resetAt}
+	}
 	s.mu.Unlock()
 
-	allowed, totalAfter := counter.AllowBelowLimit(s.nodeID, limit)
+	allowed, totalAfter, localAfter := counter.AllowBelowLimit(s.nodeID, limit)
 	if !allowed {
 		return false, 0, resetAt, nil
 	}
+
+	s.mu.Lock()
+	if s.vectors[bucketKey][s.nodeID] < localAfter {
+		s.vectors[bucketKey][s.nodeID] = localAfter
+	}
+	s.mu.Unlock()
 
 	remaining := limit - int(totalAfter)
 	if remaining < 0 {
@@ -301,8 +373,8 @@ func (s *CRDTStorage) gossipOnce() {
 	}
 
 	payload := gossipPayload{
-		NodeID:   s.nodeID,
-		Counters: s.snapshotCounters(),
+		NodeID:  s.nodeID,
+		Buckets: s.snapshotBuckets(),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -338,23 +410,143 @@ func (s *CRDTStorage) snapshotPeers() []string {
 	return out
 }
 
-func (s *CRDTStorage) snapshotCounters() map[string]map[string]int64 {
+func (s *CRDTStorage) snapshotBuckets() map[string]gossipBucket {
 	s.mu.RLock()
 	keys := make([]string, 0, len(s.counters))
 	for k := range s.counters {
 		keys = append(keys, k)
 	}
 	counters := make(map[string]*GCounter, len(keys))
+	vectors := make(map[string]map[string]int64, len(keys))
+	resetTimes := make(map[string]time.Time, len(keys))
 	for _, k := range keys {
 		counters[k] = s.counters[k]
+		vectors[k] = cloneVectorClock(s.vectors[k])
+		if meta, ok := s.meta[k]; ok {
+			resetTimes[k] = meta.resetAt
+		}
 	}
 	s.mu.RUnlock()
 
-	out := make(map[string]map[string]int64, len(counters))
+	out := make(map[string]gossipBucket, len(counters))
 	for k, counter := range counters {
-		out[k] = counter.Snapshot()
+		counts := counter.Snapshot()
+		version := vectors[k]
+		if len(version) == 0 {
+			version = cloneVectorClock(counts)
+		}
+
+		resetAt := resetTimes[k]
+		if resetAt.IsZero() {
+			if parsed, ok := parseResetAtFromBucketKey(k); ok {
+				resetAt = parsed
+			}
+		}
+
+		out[k] = gossipBucket{
+			Counts:  counts,
+			Version: version,
+			ResetAt: resetAt,
+		}
 	}
 	return out
+}
+
+func cloneVectorClock(src map[string]int64) map[string]int64 {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(src))
+	for nodeID, v := range src {
+		out[nodeID] = v
+	}
+	return out
+}
+
+func mergeVectorClock(local, incoming map[string]int64) map[string]int64 {
+	if len(local) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	out := cloneVectorClock(local)
+	if out == nil {
+		out = make(map[string]int64, len(incoming))
+	}
+	for nodeID, incomingV := range incoming {
+		if incomingV > out[nodeID] {
+			out[nodeID] = incomingV
+		}
+	}
+	return out
+}
+
+type vectorClockRelation int
+
+const (
+	localEqualsIncoming vectorClockRelation = iota
+	localDominates
+	localIsDominated
+	localConcurrent
+)
+
+func compareVectorClock(local, incoming map[string]int64) vectorClockRelation {
+	localGEIncoming := true
+	incomingGELocal := true
+
+	for nodeID, localV := range local {
+		incomingV := incoming[nodeID]
+		if localV < incomingV {
+			localGEIncoming = false
+		}
+		if incomingV < localV {
+			incomingGELocal = false
+		}
+	}
+	for nodeID, incomingV := range incoming {
+		localV := local[nodeID]
+		if localV < incomingV {
+			localGEIncoming = false
+		}
+		if incomingV < localV {
+			incomingGELocal = false
+		}
+	}
+
+	switch {
+	case localGEIncoming && incomingGELocal:
+		return localEqualsIncoming
+	case localGEIncoming:
+		return localDominates
+	case incomingGELocal:
+		return localIsDominated
+	default:
+		return localConcurrent
+	}
+}
+
+func parseResetAtFromBucketKey(bucketKey string) (time.Time, bool) {
+	last := strings.LastIndex(bucketKey, "|")
+	if last < 0 || last == len(bucketKey)-1 {
+		return time.Time{}, false
+	}
+	windowStr := bucketKey[last+1:]
+	prefix := bucketKey[:last]
+
+	secondLast := strings.LastIndex(prefix, "|")
+	if secondLast < 0 || secondLast == len(prefix)-1 {
+		return time.Time{}, false
+	}
+	windowIDStr := prefix[secondLast+1:]
+
+	windowNanos, err := strconv.ParseInt(windowStr, 10, 64)
+	if err != nil || windowNanos <= 0 {
+		return time.Time{}, false
+	}
+	windowID, err := strconv.ParseInt(windowIDStr, 10, 64)
+	if err != nil || windowID < 0 {
+		return time.Time{}, false
+	}
+
+	return time.Unix(0, (windowID+1)*windowNanos), true
 }
 
 func (s *CRDTStorage) cleanupExpired() {
@@ -368,6 +560,7 @@ func (s *CRDTStorage) cleanupExpired() {
 		if now.After(meta.resetAt.Add(2 * s.gossipInterval)) {
 			delete(s.meta, k)
 			delete(s.counters, k)
+			delete(s.vectors, k)
 		}
 	}
 }

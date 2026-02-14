@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	chronoclock "github.com/SmitUplenchwar2687/Chrono/pkg/clock"
 )
 
 func TestCRDTStorage_NewCRDTStorage_Validation(t *testing.T) {
@@ -119,6 +121,112 @@ func TestCRDTStorage_EventualConsistencyAffectsChecks(t *testing.T) {
 	}
 }
 
+func TestCRDTStorage_MergeSnapshot_UsesVectorClockOrdering(t *testing.T) {
+	s := newCRDTStorageWithoutNetwork("vc-node")
+
+	bucketKey, resetAt := s.bucketKey("user-vc", time.Second, time.Unix(0, 0))
+
+	s.mergeSnapshot(map[string]gossipBucket{
+		bucketKey: {
+			Counts:  map[string]int64{"node-a": 2},
+			Version: map[string]int64{"node-a": 2},
+			ResetAt: resetAt,
+		},
+	})
+	if total := totalForBucket(s, bucketKey); total != 2 {
+		t.Fatalf("total after first merge = %d, want 2", total)
+	}
+	if got := vectorForBucketNode(s, bucketKey, "node-a"); got != 2 {
+		t.Fatalf("vector node-a after first merge = %d, want 2", got)
+	}
+
+	// Stale update should be ignored based on vector ordering.
+	s.mergeSnapshot(map[string]gossipBucket{
+		bucketKey: {
+			Counts:  map[string]int64{"node-a": 1},
+			Version: map[string]int64{"node-a": 1},
+			ResetAt: resetAt,
+		},
+	})
+	if total := totalForBucket(s, bucketKey); total != 2 {
+		t.Fatalf("total after stale merge = %d, want 2", total)
+	}
+	if got := vectorForBucketNode(s, bucketKey, "node-a"); got != 2 {
+		t.Fatalf("vector node-a after stale merge = %d, want 2", got)
+	}
+
+	// Concurrent update should merge by max component-wise.
+	s.mergeSnapshot(map[string]gossipBucket{
+		bucketKey: {
+			Counts:  map[string]int64{"node-b": 1},
+			Version: map[string]int64{"node-b": 1},
+			ResetAt: resetAt,
+		},
+	})
+	if total := totalForBucket(s, bucketKey); total != 3 {
+		t.Fatalf("total after concurrent merge = %d, want 3", total)
+	}
+	if got := vectorForBucketNode(s, bucketKey, "node-b"); got != 1 {
+		t.Fatalf("vector node-b after concurrent merge = %d, want 1", got)
+	}
+}
+
+func TestCRDTStorage_GossipMetadataEnablesRemoteCleanup(t *testing.T) {
+	n1, n2 := newCRDTPair(t)
+	defer func() {
+		_ = n1.Close()
+		_ = n2.Close()
+	}()
+
+	window := 200 * time.Millisecond
+	key := "user-cleanup"
+
+	allowed, _, _, err := n1.CheckLimit(context.Background(), key, 10, window)
+	if err != nil {
+		t.Fatalf("CheckLimit() error = %v", err)
+	}
+	if !allowed {
+		t.Fatal("first request should be allowed")
+	}
+
+	n1.gossipOnce()
+	if err := waitForCondition(3*time.Second, 20*time.Millisecond, func() bool {
+		return hasCounterTotalAtLeast(n2, key, 1)
+	}); err != nil {
+		t.Fatalf("expected remote node to receive counter: %v", err)
+	}
+
+	// Eventually the remote bucket should disappear after reset+grace.
+	if err := waitForCondition(5*time.Second, 25*time.Millisecond, func() bool {
+		return !hasAnyBucketForLogicalKey(n2, key)
+	}); err != nil {
+		t.Fatalf("expected remote bucket cleanup after gossip metadata propagation: %v", err)
+	}
+}
+
+func TestPayloadBuckets_LegacyCountersFallback(t *testing.T) {
+	p := gossipPayload{
+		NodeID: "legacy-node",
+		Counters: map[string]map[string]int64{
+			"bucket-1": {
+				"node-a": 2,
+			},
+		},
+	}
+
+	buckets := payloadBuckets(p)
+	if len(buckets) != 1 {
+		t.Fatalf("len(buckets) = %d, want 1", len(buckets))
+	}
+	got := buckets["bucket-1"]
+	if got.Counts["node-a"] != 2 {
+		t.Fatalf("counts[node-a] = %d, want 2", got.Counts["node-a"])
+	}
+	if got.Version["node-a"] != 2 {
+		t.Fatalf("version[node-a] = %d, want 2", got.Version["node-a"])
+	}
+}
+
 func TestNormalizePeerURL(t *testing.T) {
 	if got := normalizePeerURL("127.0.0.1:8081"); !strings.HasPrefix(got, "http://") {
 		t.Fatalf("normalizePeerURL should add scheme, got %q", got)
@@ -197,16 +305,37 @@ func hasCounterTotalAtLeast(s *CRDTStorage, logicalKey string, want int64) bool 
 	return false
 }
 
-func TestBucketKeyFormat(t *testing.T) {
-	s, err := NewCRDTStorage(&CRDTConfig{
-		NodeID:         "fmt-node",
-		BindAddr:       "127.0.0.1:0",
-		GossipInterval: 100 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("NewCRDTStorage() error = %v", err)
+func hasAnyBucketForLogicalKey(s *CRDTStorage, logicalKey string) bool {
+	prefix := logicalKey + "|"
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for bucketKey := range s.counters {
+		if strings.HasPrefix(bucketKey, prefix) {
+			return true
+		}
 	}
-	defer s.Close()
+	return false
+}
+
+func totalForBucket(s *CRDTStorage, bucketKey string) int64 {
+	s.mu.RLock()
+	counter := s.counters[bucketKey]
+	s.mu.RUnlock()
+	if counter == nil {
+		return 0
+	}
+	return counter.Total()
+}
+
+func vectorForBucketNode(s *CRDTStorage, bucketKey, nodeID string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.vectors[bucketKey][nodeID]
+}
+
+func TestBucketKeyFormat(t *testing.T) {
+	s := newCRDTStorageWithoutNetwork("fmt-node")
 
 	k, _ := s.bucketKey("abc", time.Second, time.Unix(0, 0))
 	if !strings.HasPrefix(k, "abc|") {
@@ -217,5 +346,16 @@ func TestBucketKeyFormat(t *testing.T) {
 	}
 	if _, err := fmt.Sscanf(k, "abc|%d|%d", new(int64), new(int64)); err != nil {
 		t.Fatalf("bucket key should embed numeric window metadata: %s", k)
+	}
+}
+
+func newCRDTStorageWithoutNetwork(nodeID string) *CRDTStorage {
+	return &CRDTStorage{
+		nodeID:         nodeID,
+		gossipInterval: 100 * time.Millisecond,
+		clock:          chronoclock.NewRealClock(),
+		counters:       make(map[string]*GCounter),
+		vectors:        make(map[string]map[string]int64),
+		meta:           make(map[string]counterMeta),
 	}
 }
