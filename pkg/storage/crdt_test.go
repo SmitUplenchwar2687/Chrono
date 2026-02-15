@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -227,6 +229,100 @@ func TestPayloadBuckets_LegacyCountersFallback(t *testing.T) {
 	}
 }
 
+func TestCRDTStorage_Persistence_WALRecovery_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	s := newCRDTStorageWithoutNetwork("persist-node")
+	if err := s.initPersistence(&CRDTConfig{
+		NodeID:           "persist-node",
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() error = %v", err)
+	}
+	defer closeWALFile(t, s)
+
+	bucketKey, resetAt := s.bucketKey("wal-user", time.Hour, time.Now().UTC())
+	changed := s.mergeSnapshot(map[string]gossipBucket{
+		bucketKey: {
+			Counts:  map[string]int64{"node-a": 3},
+			Version: map[string]int64{"node-a": 3},
+			ResetAt: resetAt,
+		},
+	})
+	s.persistBuckets(changed)
+
+	recovered := newCRDTStorageWithoutNetwork("persist-node")
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           "persist-node",
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("recovered initPersistence() error = %v", err)
+	}
+	defer closeWALFile(t, recovered)
+
+	if total := totalForBucket(recovered, bucketKey); total != 3 {
+		t.Fatalf("recovered total = %d, want 3", total)
+	}
+}
+
+func TestCRDTStorage_Persistence_SnapshotAndDeleteRecovery_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	s := newCRDTStorageWithoutNetwork("snapshot-node")
+	if err := s.initPersistence(&CRDTConfig{
+		NodeID:           "snapshot-node",
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() error = %v", err)
+	}
+	defer closeWALFile(t, s)
+
+	keepKey, keepReset := s.bucketKey("keep-user", time.Hour, time.Now().UTC())
+	deleteKey, delReset := s.bucketKey("delete-user", time.Hour, time.Now().UTC())
+
+	s.persistBuckets(s.mergeSnapshot(map[string]gossipBucket{
+		keepKey: {
+			Counts:  map[string]int64{"node-a": 2},
+			Version: map[string]int64{"node-a": 2},
+			ResetAt: keepReset,
+		},
+		deleteKey: {
+			Counts:  map[string]int64{"node-a": 1},
+			Version: map[string]int64{"node-a": 1},
+			ResetAt: delReset,
+		},
+	}))
+
+	s.applyDelete(deleteKey)
+	s.persistDelete(deleteKey)
+	if err := s.persistSnapshot(); err != nil {
+		t.Fatalf("persistSnapshot() error = %v", err)
+	}
+
+	// Ensure snapshot file exists; recovery should be snapshot + WAL consistent.
+	if _, err := os.Stat(filepath.Join(dir, "snapshot-node.snapshot.json")); err != nil {
+		t.Fatalf("snapshot file missing: %v", err)
+	}
+
+	recovered := newCRDTStorageWithoutNetwork("snapshot-node")
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           "snapshot-node",
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("recovered initPersistence() error = %v", err)
+	}
+	defer closeWALFile(t, recovered)
+
+	if total := totalForBucket(recovered, keepKey); total != 2 {
+		t.Fatalf("recovered keep total = %d, want 2", total)
+	}
+	if total := totalForBucket(recovered, deleteKey); total != 0 {
+		t.Fatalf("recovered deleted total = %d, want 0", total)
+	}
+}
+
 func TestNormalizePeerURL(t *testing.T) {
 	if got := normalizePeerURL("127.0.0.1:8081"); !strings.HasPrefix(got, "http://") {
 		t.Fatalf("normalizePeerURL should add scheme, got %q", got)
@@ -351,11 +447,24 @@ func TestBucketKeyFormat(t *testing.T) {
 
 func newCRDTStorageWithoutNetwork(nodeID string) *CRDTStorage {
 	return &CRDTStorage{
-		nodeID:         nodeID,
-		gossipInterval: 100 * time.Millisecond,
-		clock:          chronoclock.NewRealClock(),
-		counters:       make(map[string]*GCounter),
-		vectors:        make(map[string]map[string]int64),
-		meta:           make(map[string]counterMeta),
+		nodeID:           nodeID,
+		gossipInterval:   100 * time.Millisecond,
+		snapshotInterval: time.Second,
+		clock:            chronoclock.NewRealClock(),
+		counters:         make(map[string]*GCounter),
+		vectors:          make(map[string]map[string]int64),
+		meta:             make(map[string]counterMeta),
+	}
+}
+
+func closeWALFile(t *testing.T, s *CRDTStorage) {
+	t.Helper()
+	s.walMu.Lock()
+	defer s.walMu.Unlock()
+	if s.walFile != nil {
+		if err := s.walFile.Close(); err != nil {
+			t.Fatalf("close wal file: %v", err)
+		}
+		s.walFile = nil
 	}
 }

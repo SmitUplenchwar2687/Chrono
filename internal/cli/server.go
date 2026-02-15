@@ -198,11 +198,13 @@ func createServerLimiter(
 			return nil, fmt.Errorf("algorithm %q is unsupported with crdt backend; use %q", algo, limiter.AlgorithmSlidingWindow)
 		}
 		cfg.CRDT = &chronostorage.CRDTConfig{
-			NodeID:         storageCfg.CRDT.NodeID,
-			BindAddr:       storageCfg.CRDT.BindAddr,
-			Peers:          append([]string(nil), storageCfg.CRDT.Peers...),
-			GossipInterval: storageCfg.CRDT.GossipInterval,
-			Clock:          clk,
+			NodeID:           storageCfg.CRDT.NodeID,
+			BindAddr:         storageCfg.CRDT.BindAddr,
+			Peers:            append([]string(nil), storageCfg.CRDT.Peers...),
+			GossipInterval:   storageCfg.CRDT.GossipInterval,
+			PersistDir:       storageCfg.CRDT.PersistDir,
+			SnapshotInterval: storageCfg.CRDT.SnapshotInterval,
+			Clock:            clk,
 		}
 	default:
 		return nil, fmt.Errorf("unknown storage backend %q", backend)

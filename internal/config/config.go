@@ -52,10 +52,12 @@ type StorageRedisConfig struct {
 
 // StorageCRDTConfig configures the experimental CRDT storage backend.
 type StorageCRDTConfig struct {
-	NodeID         string        `json:"node_id"`
-	BindAddr       string        `json:"bind_addr"`
-	Peers          []string      `json:"peers"`
-	GossipInterval time.Duration `json:"gossip_interval"`
+	NodeID           string        `json:"node_id"`
+	BindAddr         string        `json:"bind_addr"`
+	Peers            []string      `json:"peers"`
+	GossipInterval   time.Duration `json:"gossip_interval"`
+	PersistDir       string        `json:"persist_dir,omitempty"`
+	SnapshotInterval time.Duration `json:"snapshot_interval,omitempty"`
 }
 
 // Default returns a Config with sensible defaults.
@@ -80,7 +82,8 @@ func Default() Config {
 				Port: 6379,
 			},
 			CRDT: StorageCRDTConfig{
-				BindAddr: ":8081",
+				BindAddr:         ":8081",
+				SnapshotInterval: 30 * time.Second,
 			},
 		},
 	}
@@ -133,6 +136,9 @@ func (c *Config) Validate() error {
 		}
 		if c.Storage.CRDT.BindAddr == "" {
 			return fmt.Errorf("storage.crdt.bind_addr is required when backend=crdt")
+		}
+		if c.Storage.CRDT.SnapshotInterval < 0 {
+			return fmt.Errorf("storage.crdt.snapshot_interval must be non-negative, got %s", c.Storage.CRDT.SnapshotInterval)
 		}
 	default:
 		return fmt.Errorf("unknown storage backend %q, must be one of: memory, redis, crdt", backend)
@@ -239,6 +245,16 @@ func LoadFile(path string) (Config, error) {
 		}
 		cfg.Storage.CRDT.GossipInterval = d
 	}
+	if raw.Storage.CRDT.PersistDir != "" {
+		cfg.Storage.CRDT.PersistDir = raw.Storage.CRDT.PersistDir
+	}
+	if raw.Storage.CRDT.SnapshotInterval != "" {
+		d, err := time.ParseDuration(raw.Storage.CRDT.SnapshotInterval)
+		if err != nil {
+			return cfg, fmt.Errorf("parsing storage.crdt.snapshot_interval: %w", err)
+		}
+		cfg.Storage.CRDT.SnapshotInterval = d
+	}
 
 	return cfg, nil
 }
@@ -273,10 +289,12 @@ type rawConfig struct {
 			DialTimeout  string   `json:"dial_timeout"`
 		} `json:"redis"`
 		CRDT struct {
-			NodeID         string   `json:"node_id"`
-			BindAddr       string   `json:"bind_addr"`
-			Peers          []string `json:"peers"`
-			GossipInterval string   `json:"gossip_interval"`
+			NodeID           string   `json:"node_id"`
+			BindAddr         string   `json:"bind_addr"`
+			Peers            []string `json:"peers"`
+			GossipInterval   string   `json:"gossip_interval"`
+			PersistDir       string   `json:"persist_dir"`
+			SnapshotInterval string   `json:"snapshot_interval"`
 		} `json:"crdt"`
 	} `json:"storage"`
 }

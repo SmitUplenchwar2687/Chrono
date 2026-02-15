@@ -29,6 +29,8 @@ type storageOptions struct {
 	crdtBindAddr          string
 	crdtPeers             []string
 	crdtGossipInterval    time.Duration
+	crdtPersistDir        string
+	crdtSnapshotInterval  time.Duration
 }
 
 func defaultStorageOptions() storageOptions {
@@ -43,6 +45,7 @@ func defaultStorageOptions() storageOptions {
 		redisDialTimeout:      5 * time.Second,
 		crdtBindAddr:          ":8081",
 		crdtGossipInterval:    time.Second,
+		crdtSnapshotInterval:  30 * time.Second,
 	}
 }
 
@@ -62,6 +65,8 @@ func (o *storageOptions) addFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.crdtBindAddr, "crdt-bind-addr", ":8081", "CRDT bind address")
 	cmd.Flags().StringSliceVar(&o.crdtPeers, "crdt-peers", nil, "CRDT peer addresses")
 	cmd.Flags().DurationVar(&o.crdtGossipInterval, "crdt-gossip-interval", time.Second, "CRDT gossip interval")
+	cmd.Flags().StringVar(&o.crdtPersistDir, "crdt-persist-dir", "", "CRDT persistence directory for snapshot/WAL state")
+	cmd.Flags().DurationVar(&o.crdtSnapshotInterval, "crdt-snapshot-interval", 30*time.Second, "CRDT snapshot interval when persistence is enabled")
 }
 
 func (o *storageOptions) applyConfigIfUnset(cmd *cobra.Command, cfg *config.StorageConfig) {
@@ -114,6 +119,12 @@ func (o *storageOptions) applyConfigIfUnset(cmd *cobra.Command, cfg *config.Stor
 	if !cmd.Flags().Changed("crdt-gossip-interval") {
 		o.crdtGossipInterval = cfg.CRDT.GossipInterval
 	}
+	if !cmd.Flags().Changed("crdt-persist-dir") {
+		o.crdtPersistDir = cfg.CRDT.PersistDir
+	}
+	if !cmd.Flags().Changed("crdt-snapshot-interval") {
+		o.crdtSnapshotInterval = cfg.CRDT.SnapshotInterval
+	}
 }
 
 func (o *storageOptions) normalize() error {
@@ -149,10 +160,12 @@ func (o *storageOptions) toConfig(burst int) config.StorageConfig {
 			DialTimeout:  o.redisDialTimeout,
 		},
 		CRDT: config.StorageCRDTConfig{
-			NodeID:         o.crdtNodeID,
-			BindAddr:       o.crdtBindAddr,
-			Peers:          append([]string(nil), o.crdtPeers...),
-			GossipInterval: o.crdtGossipInterval,
+			NodeID:           o.crdtNodeID,
+			BindAddr:         o.crdtBindAddr,
+			Peers:            append([]string(nil), o.crdtPeers...),
+			GossipInterval:   o.crdtGossipInterval,
+			PersistDir:       o.crdtPersistDir,
+			SnapshotInterval: o.crdtSnapshotInterval,
 		},
 	}
 }

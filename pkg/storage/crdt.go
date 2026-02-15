@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,15 +10,19 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	chronoclock "github.com/SmitUplenchwar2687/Chrono/pkg/clock"
 )
 
 const defaultCRDTGossipInterval = time.Second
+const defaultCRDTSnapshotInterval = 30 * time.Second
 
 // GCounter is a grow-only counter CRDT.
 // It keeps per-node counts and merges by taking max per node.
@@ -107,13 +112,26 @@ type gossipPayload struct {
 	Counters map[string]map[string]int64 `json:"counters,omitempty"`
 }
 
+type walRecord struct {
+	Op        string        `json:"op"`
+	BucketKey string        `json:"bucket_key,omitempty"`
+	Bucket    *gossipBucket `json:"bucket,omitempty"`
+	At        time.Time     `json:"at"`
+}
+
+type snapshotRecord struct {
+	SavedAt time.Time               `json:"saved_at"`
+	Buckets map[string]gossipBucket `json:"buckets"`
+}
+
 // CRDTStorage is an experimental CRDT-backed storage backend.
 type CRDTStorage struct {
 	nodeID string
 	peers  []string
 
-	gossipInterval time.Duration
-	clock          chronoclock.Clock
+	gossipInterval   time.Duration
+	snapshotInterval time.Duration
+	clock            chronoclock.Clock
 
 	mu       sync.RWMutex
 	counters map[string]*GCounter
@@ -123,6 +141,15 @@ type CRDTStorage struct {
 	httpServer *http.Server
 	client     *http.Client
 	bindAddr   string
+
+	persistDir    string
+	persistEnable bool
+	snapshotPath  string
+	walPath       string
+	nextSnapshot  time.Time
+
+	walMu   sync.Mutex
+	walFile *os.File
 
 	stopCh    chan struct{}
 	doneCh    chan struct{}
@@ -145,15 +172,20 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 	if interval <= 0 {
 		interval = defaultCRDTGossipInterval
 	}
+	snapshotInterval := cfg.SnapshotInterval
+	if snapshotInterval <= 0 {
+		snapshotInterval = defaultCRDTSnapshotInterval
+	}
 
 	s := &CRDTStorage{
-		nodeID:         cfg.NodeID,
-		peers:          append([]string(nil), cfg.Peers...),
-		gossipInterval: interval,
-		clock:          cfg.Clock,
-		counters:       make(map[string]*GCounter),
-		vectors:        make(map[string]map[string]int64),
-		meta:           make(map[string]counterMeta),
+		nodeID:           cfg.NodeID,
+		peers:            append([]string(nil), cfg.Peers...),
+		gossipInterval:   interval,
+		snapshotInterval: snapshotInterval,
+		clock:            cfg.Clock,
+		counters:         make(map[string]*GCounter),
+		vectors:          make(map[string]map[string]int64),
+		meta:             make(map[string]counterMeta),
 		client: &http.Client{
 			Timeout: 3 * time.Second,
 		},
@@ -163,19 +195,144 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 	if s.clock == nil {
 		s.clock = chronoclock.NewRealClock()
 	}
+	if err := s.initPersistence(cfg); err != nil {
+		return nil, err
+	}
 
 	log.Printf("WARNING: CRDT storage is EXPERIMENTAL - known limitations:")
 	log.Printf("WARNING: - Eventual consistency (temporary drift is expected)")
 	log.Printf("WARNING: - Simple HTTP polling gossip (not production-grade)")
-	log.Printf("WARNING: - In-memory only (no persistence)")
+	if !s.persistEnable {
+		log.Printf("WARNING: - In-memory only (no persistence)")
+	}
 	log.Printf("WARNING: - Use Redis for production deployments")
 
 	if err := s.startHTTPServer(cfg.BindAddr); err != nil {
+		s.walMu.Lock()
+		if s.walFile != nil {
+			_ = s.walFile.Close()
+			s.walFile = nil
+		}
+		s.walMu.Unlock()
 		return nil, err
 	}
 
 	go s.gossipLoop()
 	return s, nil
+}
+
+func (s *CRDTStorage) initPersistence(cfg *CRDTConfig) error {
+	if cfg == nil || cfg.PersistDir == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(cfg.PersistDir, 0o755); err != nil {
+		return fmt.Errorf("creating crdt persist dir %s: %w", cfg.PersistDir, err)
+	}
+
+	s.persistEnable = true
+	s.persistDir = cfg.PersistDir
+
+	base := sanitizePathComponent(s.nodeID)
+	if base == "" {
+		base = "node"
+	}
+	s.snapshotPath = filepath.Join(s.persistDir, base+".snapshot.json")
+	s.walPath = filepath.Join(s.persistDir, base+".wal.jsonl")
+
+	if err := s.loadSnapshot(); err != nil {
+		return err
+	}
+	if err := s.loadWAL(); err != nil {
+		return err
+	}
+	s.cleanupExpired()
+
+	walFile, err := os.OpenFile(s.walPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open crdt wal: %w", err)
+	}
+	s.walFile = walFile
+	s.nextSnapshot = s.clock.Now().Add(s.snapshotInterval)
+	return nil
+}
+
+func sanitizePathComponent(in string) string {
+	var b strings.Builder
+	for _, r := range in {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
+func (s *CRDTStorage) loadSnapshot() error {
+	data, err := os.ReadFile(s.snapshotPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read crdt snapshot: %w", err)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+
+	var rec snapshotRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return fmt.Errorf("decode crdt snapshot: %w", err)
+	}
+	if len(rec.Buckets) == 0 {
+		return nil
+	}
+	_ = s.mergeSnapshot(rec.Buckets)
+	return nil
+}
+
+func (s *CRDTStorage) loadWAL() error {
+	f, err := os.Open(s.walPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("open crdt wal: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+
+		var rec walRecord
+		if err := json.Unmarshal(line, &rec); err != nil {
+			return fmt.Errorf("decode crdt wal record: %w", err)
+		}
+		switch rec.Op {
+		case "upsert":
+			if rec.Bucket == nil || rec.BucketKey == "" {
+				continue
+			}
+			_ = s.mergeSnapshot(map[string]gossipBucket{rec.BucketKey: *rec.Bucket})
+		case "delete":
+			if rec.BucketKey == "" {
+				continue
+			}
+			s.applyDelete(rec.BucketKey)
+		default:
+			continue
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan crdt wal: %w", err)
+	}
+	return nil
 }
 
 func (s *CRDTStorage) startHTTPServer(bindAddr string) error {
@@ -218,7 +375,8 @@ func (s *CRDTStorage) handleGossip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mergeSnapshot(payloadBuckets(payload))
+	changed := s.mergeSnapshot(payloadBuckets(payload))
+	s.persistBuckets(changed)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -240,10 +398,12 @@ func payloadBuckets(p gossipPayload) map[string]gossipBucket {
 	return out
 }
 
-func (s *CRDTStorage) mergeSnapshot(snapshot map[string]gossipBucket) {
+func (s *CRDTStorage) mergeSnapshot(snapshot map[string]gossipBucket) []string {
 	if len(snapshot) == 0 {
-		return
+		return nil
 	}
+
+	changedSet := make(map[string]struct{}, len(snapshot))
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -270,6 +430,7 @@ func (s *CRDTStorage) mergeSnapshot(snapshot map[string]gossipBucket) {
 			counter.Merge(incoming.Counts)
 			localVersion = mergeVectorClock(localVersion, incomingVersion)
 			s.vectors[bucketKey] = localVersion
+			changedSet[bucketKey] = struct{}{}
 		}
 
 		resetAt := incoming.ResetAt
@@ -282,9 +443,16 @@ func (s *CRDTStorage) mergeSnapshot(snapshot map[string]gossipBucket) {
 			meta := s.meta[bucketKey]
 			if meta.resetAt.IsZero() || resetAt.After(meta.resetAt) {
 				s.meta[bucketKey] = counterMeta{resetAt: resetAt}
+				changedSet[bucketKey] = struct{}{}
 			}
 		}
 	}
+
+	out := make([]string, 0, len(changedSet))
+	for key := range changedSet {
+		out = append(out, key)
+	}
+	return out
 }
 
 // CheckLimit checks if request is allowed based on CRDT counter in current window bucket.
@@ -333,6 +501,7 @@ func (s *CRDTStorage) CheckLimit(ctx context.Context, key string, limit int, win
 		s.vectors[bucketKey][s.nodeID] = localAfter
 	}
 	s.mu.Unlock()
+	s.persistBucket(bucketKey)
 
 	remaining := limit - int(totalAfter)
 	if remaining < 0 {
@@ -360,6 +529,7 @@ func (s *CRDTStorage) gossipLoop() {
 		case <-ticker.C:
 			s.gossipOnce()
 			s.cleanupExpired()
+			s.maybePersistSnapshot()
 		case <-s.stopCh:
 			return
 		}
@@ -549,19 +719,164 @@ func parseResetAtFromBucketKey(bucketKey string) (time.Time, bool) {
 	return time.Unix(0, (windowID+1)*windowNanos), true
 }
 
+func (s *CRDTStorage) maybePersistSnapshot() {
+	if !s.persistEnable || s.snapshotInterval <= 0 {
+		return
+	}
+
+	now := s.clock.Now()
+	if !s.nextSnapshot.IsZero() && now.Before(s.nextSnapshot) {
+		return
+	}
+	if err := s.persistSnapshot(); err != nil {
+		log.Printf("crdt snapshot persist error: %v", err)
+	}
+	s.nextSnapshot = now.Add(s.snapshotInterval)
+}
+
+func (s *CRDTStorage) persistSnapshot() error {
+	if !s.persistEnable {
+		return nil
+	}
+
+	rec := snapshotRecord{
+		SavedAt: time.Now().UTC(),
+		Buckets: s.snapshotBuckets(),
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshal crdt snapshot: %w", err)
+	}
+
+	tmpPath := s.snapshotPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return fmt.Errorf("write crdt snapshot temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.snapshotPath); err != nil {
+		return fmt.Errorf("rename crdt snapshot: %w", err)
+	}
+	return nil
+}
+
+func (s *CRDTStorage) persistBuckets(bucketKeys []string) {
+	if len(bucketKeys) == 0 {
+		return
+	}
+	for _, bucketKey := range bucketKeys {
+		s.persistBucket(bucketKey)
+	}
+}
+
+func (s *CRDTStorage) persistBucket(bucketKey string) {
+	if !s.persistEnable || bucketKey == "" {
+		return
+	}
+
+	bucket, ok := s.snapshotBucket(bucketKey)
+	if !ok {
+		return
+	}
+
+	rec := walRecord{
+		Op:        "upsert",
+		BucketKey: bucketKey,
+		Bucket:    &bucket,
+		At:        time.Now().UTC(),
+	}
+	if err := s.appendWAL(rec); err != nil {
+		log.Printf("crdt wal append error for bucket %s: %v", bucketKey, err)
+	}
+}
+
+func (s *CRDTStorage) snapshotBucket(bucketKey string) (gossipBucket, bool) {
+	s.mu.RLock()
+	counter := s.counters[bucketKey]
+	vector := cloneVectorClock(s.vectors[bucketKey])
+	meta, hasMeta := s.meta[bucketKey]
+	s.mu.RUnlock()
+	if counter == nil {
+		return gossipBucket{}, false
+	}
+
+	counts := counter.Snapshot()
+	if len(counts) == 0 {
+		return gossipBucket{}, false
+	}
+	if len(vector) == 0 {
+		vector = cloneVectorClock(counts)
+	}
+
+	resetAt := time.Time{}
+	if hasMeta {
+		resetAt = meta.resetAt
+	} else if parsed, ok := parseResetAtFromBucketKey(bucketKey); ok {
+		resetAt = parsed
+	}
+
+	return gossipBucket{
+		Counts:  counts,
+		Version: vector,
+		ResetAt: resetAt,
+	}, true
+}
+
+func (s *CRDTStorage) persistDelete(bucketKey string) {
+	if !s.persistEnable || bucketKey == "" {
+		return
+	}
+	rec := walRecord{
+		Op:        "delete",
+		BucketKey: bucketKey,
+		At:        time.Now().UTC(),
+	}
+	if err := s.appendWAL(rec); err != nil {
+		log.Printf("crdt wal append delete error for bucket %s: %v", bucketKey, err)
+	}
+}
+
+func (s *CRDTStorage) appendWAL(rec walRecord) error {
+	if !s.persistEnable || s.walFile == nil {
+		return nil
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshal crdt wal record: %w", err)
+	}
+
+	s.walMu.Lock()
+	defer s.walMu.Unlock()
+	if _, err := s.walFile.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("write crdt wal record: %w", err)
+	}
+	return nil
+}
+
+func (s *CRDTStorage) applyDelete(bucketKey string) {
+	s.mu.Lock()
+	delete(s.counters, bucketKey)
+	delete(s.vectors, bucketKey)
+	delete(s.meta, bucketKey)
+	s.mu.Unlock()
+}
+
 func (s *CRDTStorage) cleanupExpired() {
 	now := s.clock.Now()
+	var deleted []string
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for k, meta := range s.meta {
 		// Keep counters slightly beyond window end to allow gossip convergence.
 		if now.After(meta.resetAt.Add(2 * s.gossipInterval)) {
 			delete(s.meta, k)
 			delete(s.counters, k)
 			delete(s.vectors, k)
+			deleted = append(deleted, k)
 		}
+	}
+	s.mu.Unlock()
+
+	for _, bucketKey := range deleted {
+		s.persistDelete(bucketKey)
 	}
 }
 
@@ -584,6 +899,20 @@ func (s *CRDTStorage) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.stopCh)
 		<-s.doneCh
+		if err := s.persistSnapshot(); err != nil && retErr == nil {
+			retErr = err
+		}
+		s.walMu.Lock()
+		if s.walFile != nil {
+			if err := s.walFile.Sync(); err != nil && retErr == nil {
+				retErr = err
+			}
+			if err := s.walFile.Close(); err != nil && retErr == nil {
+				retErr = err
+			}
+			s.walFile = nil
+		}
+		s.walMu.Unlock()
 		if s.httpServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()

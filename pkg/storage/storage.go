@@ -57,11 +57,13 @@ type RedisConfig struct {
 
 // CRDTConfig is reserved for phase 2 experimental CRDT implementation.
 type CRDTConfig struct {
-	NodeID         string            `json:"node_id" yaml:"node_id"`
-	BindAddr       string            `json:"bind_addr" yaml:"bind_addr"`
-	Peers          []string          `json:"peers" yaml:"peers"`
-	GossipInterval time.Duration     `json:"gossip_interval" yaml:"gossip_interval"`
-	Clock          chronoclock.Clock `json:"-" yaml:"-"`
+	NodeID           string            `json:"node_id" yaml:"node_id"`
+	BindAddr         string            `json:"bind_addr" yaml:"bind_addr"`
+	Peers            []string          `json:"peers" yaml:"peers"`
+	GossipInterval   time.Duration     `json:"gossip_interval" yaml:"gossip_interval"`
+	PersistDir       string            `json:"persist_dir,omitempty" yaml:"persist_dir,omitempty"`
+	SnapshotInterval time.Duration     `json:"snapshot_interval,omitempty" yaml:"snapshot_interval,omitempty"`
+	Clock            chronoclock.Clock `json:"-" yaml:"-"`
 }
 
 // NewStorage constructs the configured backend.
