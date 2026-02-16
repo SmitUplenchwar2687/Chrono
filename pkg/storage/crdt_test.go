@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -323,6 +324,169 @@ func TestCRDTStorage_Persistence_SnapshotAndDeleteRecovery_NoNetwork(t *testing.
 	}
 }
 
+func TestCRDTStorage_Persistence_WALReplay_SkipsCorruptAndContinues_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "wal-corrupt-node"
+	s := newCRDTStorageWithoutNetwork(nodeID)
+
+	keyA, resetA := s.bucketKey("wal-a", time.Hour, time.Now().UTC())
+	keyB, resetB := s.bucketKey("wal-b", time.Hour, time.Now().UTC())
+
+	recA := walRecord{
+		Op:        "upsert",
+		BucketKey: keyA,
+		Bucket: &gossipBucket{
+			Counts:  map[string]int64{"node-a": 1},
+			Version: map[string]int64{"node-a": 1},
+			ResetAt: resetA,
+		},
+		At: time.Now().UTC(),
+	}
+	recB := walRecord{
+		Op:        "upsert",
+		BucketKey: keyB,
+		Bucket: &gossipBucket{
+			Counts:  map[string]int64{"node-b": 2},
+			Version: map[string]int64{"node-b": 2},
+			ResetAt: resetB,
+		},
+		At: time.Now().UTC(),
+	}
+
+	walPath := walPathForNode(dir, nodeID)
+	writeWALFixture(t, walPath, []string{
+		mustJSONLine(t, recA),
+		"{not-json",
+		mustJSONLine(t, recB),
+	})
+
+	recovered := newCRDTStorageWithoutNetwork(nodeID)
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() error = %v", err)
+	}
+	defer closeWALFile(t, recovered)
+
+	if total := totalForBucket(recovered, keyA); total != 1 {
+		t.Fatalf("recovered total for keyA = %d, want 1", total)
+	}
+	if total := totalForBucket(recovered, keyB); total != 2 {
+		t.Fatalf("recovered total for keyB = %d, want 2", total)
+	}
+}
+
+func TestCRDTStorage_Persistence_WALReplay_IgnoresTruncatedTail_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "wal-tail-node"
+	s := newCRDTStorageWithoutNetwork(nodeID)
+
+	key, resetAt := s.bucketKey("wal-tail", time.Hour, time.Now().UTC())
+	rec := walRecord{
+		Op:        "upsert",
+		BucketKey: key,
+		Bucket: &gossipBucket{
+			Counts:  map[string]int64{"node-a": 4},
+			Version: map[string]int64{"node-a": 4},
+			ResetAt: resetAt,
+		},
+		At: time.Now().UTC(),
+	}
+
+	walPath := walPathForNode(dir, nodeID)
+	writeWALFixture(t, walPath, []string{
+		mustJSONLine(t, rec),
+		`{"op":"upsert","bucket_key":"incomplete"`,
+	})
+
+	recovered := newCRDTStorageWithoutNetwork(nodeID)
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() error = %v", err)
+	}
+	defer closeWALFile(t, recovered)
+
+	if total := totalForBucket(recovered, key); total != 4 {
+		t.Fatalf("recovered total = %d, want 4", total)
+	}
+}
+
+func TestCRDTStorage_Persistence_SnapshotCompactsWAL_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "wal-compact-node"
+	s := newCRDTStorageWithoutNetwork(nodeID)
+	if err := s.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() error = %v", err)
+	}
+	defer closeWALFile(t, s)
+
+	keyA, resetA := s.bucketKey("compact-a", time.Hour, time.Now().UTC())
+	keyB, resetB := s.bucketKey("compact-b", time.Hour, time.Now().UTC())
+
+	s.persistBuckets(s.mergeSnapshot(map[string]gossipBucket{
+		keyA: {
+			Counts:  map[string]int64{"node-a": 2},
+			Version: map[string]int64{"node-a": 2},
+			ResetAt: resetA,
+		},
+	}))
+
+	before, err := os.Stat(walPathForNode(dir, nodeID))
+	if err != nil {
+		t.Fatalf("stat wal before snapshot: %v", err)
+	}
+	if before.Size() <= 0 {
+		t.Fatalf("expected WAL to have content before snapshot, got size=%d", before.Size())
+	}
+
+	if err := s.persistSnapshot(); err != nil {
+		t.Fatalf("persistSnapshot() error = %v", err)
+	}
+
+	after, err := os.Stat(walPathForNode(dir, nodeID))
+	if err != nil {
+		t.Fatalf("stat wal after snapshot: %v", err)
+	}
+	if after.Size() != 0 {
+		t.Fatalf("expected WAL to be compacted to empty file, got size=%d", after.Size())
+	}
+
+	// Appends must still work after compaction.
+	s.persistBuckets(s.mergeSnapshot(map[string]gossipBucket{
+		keyB: {
+			Counts:  map[string]int64{"node-b": 3},
+			Version: map[string]int64{"node-b": 3},
+			ResetAt: resetB,
+		},
+	}))
+
+	recovered := newCRDTStorageWithoutNetwork(nodeID)
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("recovered initPersistence() error = %v", err)
+	}
+	defer closeWALFile(t, recovered)
+
+	if total := totalForBucket(recovered, keyA); total != 2 {
+		t.Fatalf("recovered total for keyA = %d, want 2", total)
+	}
+	if total := totalForBucket(recovered, keyB); total != 3 {
+		t.Fatalf("recovered total for keyB = %d, want 3", total)
+	}
+}
+
 func TestNormalizePeerURL(t *testing.T) {
 	if got := normalizePeerURL("127.0.0.1:8081"); !strings.HasPrefix(got, "http://") {
 		t.Fatalf("normalizePeerURL should add scheme, got %q", got)
@@ -454,6 +618,30 @@ func newCRDTStorageWithoutNetwork(nodeID string) *CRDTStorage {
 		counters:         make(map[string]*GCounter),
 		vectors:          make(map[string]map[string]int64),
 		meta:             make(map[string]counterMeta),
+	}
+}
+
+func walPathForNode(dir, nodeID string) string {
+	return filepath.Join(dir, sanitizePathComponent(nodeID)+".wal.jsonl")
+}
+
+func mustJSONLine(t *testing.T, v interface{}) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("json marshal: %v", err)
+	}
+	return string(b)
+}
+
+func writeWALFixture(t *testing.T, walPath string, lines []string) {
+	t.Helper()
+	data := strings.Join(lines, "\n")
+	if !strings.HasSuffix(data, "\n") {
+		data += "\n"
+	}
+	if err := os.WriteFile(walPath, []byte(data), 0o644); err != nil {
+		t.Fatalf("write wal fixture: %v", err)
 	}
 }
 

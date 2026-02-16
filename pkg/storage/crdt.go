@@ -304,7 +304,10 @@ func (s *CRDTStorage) loadWAL() error {
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	lineNo := 0
+	skipped := 0
 	for scanner.Scan() {
+		lineNo++
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
 			continue
@@ -312,7 +315,9 @@ func (s *CRDTStorage) loadWAL() error {
 
 		var rec walRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
-			return fmt.Errorf("decode crdt wal record: %w", err)
+			skipped++
+			log.Printf("crdt wal decode warning at line %d: %v (record skipped)", lineNo, err)
+			continue
 		}
 		switch rec.Op {
 		case "upsert":
@@ -331,6 +336,9 @@ func (s *CRDTStorage) loadWAL() error {
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("scan crdt wal: %w", err)
+	}
+	if skipped > 0 {
+		log.Printf("crdt wal replay skipped %d invalid records", skipped)
 	}
 	return nil
 }
@@ -739,6 +747,9 @@ func (s *CRDTStorage) persistSnapshot() error {
 		return nil
 	}
 
+	s.walMu.Lock()
+	defer s.walMu.Unlock()
+
 	rec := snapshotRecord{
 		SavedAt: time.Now().UTC(),
 		Buckets: s.snapshotBuckets(),
@@ -755,6 +766,34 @@ func (s *CRDTStorage) persistSnapshot() error {
 	if err := os.Rename(tmpPath, s.snapshotPath); err != nil {
 		return fmt.Errorf("rename crdt snapshot: %w", err)
 	}
+
+	if err := s.rotateWALLocked(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *CRDTStorage) rotateWALLocked() error {
+	// caller must hold walMu
+	if !s.persistEnable {
+		return nil
+	}
+
+	if s.walFile != nil {
+		if err := s.walFile.Sync(); err != nil {
+			return fmt.Errorf("sync crdt wal before rotate: %w", err)
+		}
+		if err := s.walFile.Close(); err != nil {
+			return fmt.Errorf("close crdt wal before rotate: %w", err)
+		}
+		s.walFile = nil
+	}
+
+	walFile, err := os.OpenFile(s.walPath, os.O_CREATE|os.O_TRUNC|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("reopen crdt wal after rotate: %w", err)
+	}
+	s.walFile = walFile
 	return nil
 }
 

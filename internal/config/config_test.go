@@ -113,6 +113,17 @@ func TestValidate_CRDTRequiresNodeIDAndBindAddr(t *testing.T) {
 	}
 }
 
+func TestValidate_CRDTSnapshotIntervalNonNegative(t *testing.T) {
+	cfg := Default()
+	cfg.Storage.Backend = "crdt"
+	cfg.Storage.CRDT.NodeID = "node-1"
+	cfg.Storage.CRDT.BindAddr = ":8081"
+	cfg.Storage.CRDT.SnapshotInterval = -time.Second
+	if err := cfg.Validate(); err == nil {
+		t.Error("negative crdt snapshot interval should be invalid")
+	}
+}
+
 func TestLoadFile_Full(t *testing.T) {
 	content := `{
   "server": { "addr": ":9090" },
@@ -234,6 +245,33 @@ func TestLoadFile_BadStorageDuration(t *testing.T) {
 	_, err := LoadFile(path)
 	if err == nil {
 		t.Error("expected error for bad storage duration")
+	}
+}
+
+func TestLoadFile_CRDTPersistenceFields(t *testing.T) {
+	content := `{
+  "storage": {
+    "backend": "crdt",
+    "crdt": {
+      "node_id": "node-1",
+      "bind_addr": ":8081",
+      "persist_dir": "/tmp/chrono-crdt",
+      "snapshot_interval": "45s"
+    }
+  }
+}`
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(content), 0o644)
+
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.CRDT.PersistDir != "/tmp/chrono-crdt" {
+		t.Errorf("persist_dir = %q, want /tmp/chrono-crdt", cfg.Storage.CRDT.PersistDir)
+	}
+	if cfg.Storage.CRDT.SnapshotInterval != 45*time.Second {
+		t.Errorf("snapshot_interval = %v, want 45s", cfg.Storage.CRDT.SnapshotInterval)
 	}
 }
 

@@ -100,3 +100,20 @@ func TestCreateServerLimiter_CRDTRequiresSlidingWindow(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestStorageOptionsToConfig_CRDTPersistenceFields(t *testing.T) {
+	opts := defaultStorageOptions()
+	opts.backend = "crdt"
+	opts.crdtNodeID = "node-1"
+	opts.crdtBindAddr = ":8081"
+	opts.crdtPersistDir = "/tmp/chrono-crdt"
+	opts.crdtSnapshotInterval = 45 * time.Second
+
+	cfg := opts.toConfig(0)
+	if cfg.CRDT.PersistDir != "/tmp/chrono-crdt" {
+		t.Fatalf("persist dir = %q, want /tmp/chrono-crdt", cfg.CRDT.PersistDir)
+	}
+	if cfg.CRDT.SnapshotInterval != 45*time.Second {
+		t.Fatalf("snapshot interval = %v, want 45s", cfg.CRDT.SnapshotInterval)
+	}
+}
