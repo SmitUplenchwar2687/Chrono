@@ -124,6 +124,17 @@ func TestValidate_CRDTSnapshotIntervalNonNegative(t *testing.T) {
 	}
 }
 
+func TestValidate_CRDTWALSyncIntervalNonNegative(t *testing.T) {
+	cfg := Default()
+	cfg.Storage.Backend = "crdt"
+	cfg.Storage.CRDT.NodeID = "node-1"
+	cfg.Storage.CRDT.BindAddr = ":8081"
+	cfg.Storage.CRDT.WALSyncInterval = -time.Second
+	if err := cfg.Validate(); err == nil {
+		t.Error("negative crdt wal sync interval should be invalid")
+	}
+}
+
 func TestLoadFile_Full(t *testing.T) {
 	content := `{
   "server": { "addr": ":9090" },
@@ -256,7 +267,8 @@ func TestLoadFile_CRDTPersistenceFields(t *testing.T) {
       "node_id": "node-1",
       "bind_addr": ":8081",
       "persist_dir": "/tmp/chrono-crdt",
-      "snapshot_interval": "45s"
+      "snapshot_interval": "45s",
+      "wal_sync_interval": "2s"
     }
   }
 }`
@@ -272,6 +284,9 @@ func TestLoadFile_CRDTPersistenceFields(t *testing.T) {
 	}
 	if cfg.Storage.CRDT.SnapshotInterval != 45*time.Second {
 		t.Errorf("snapshot_interval = %v, want 45s", cfg.Storage.CRDT.SnapshotInterval)
+	}
+	if cfg.Storage.CRDT.WALSyncInterval != 2*time.Second {
+		t.Errorf("wal_sync_interval = %v, want 2s", cfg.Storage.CRDT.WALSyncInterval)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log"
 	"net"
@@ -23,6 +24,7 @@ import (
 
 const defaultCRDTGossipInterval = time.Second
 const defaultCRDTSnapshotInterval = 30 * time.Second
+const defaultCRDTWALSyncInterval = time.Second
 
 // GCounter is a grow-only counter CRDT.
 // It keeps per-node counts and merges by taking max per node.
@@ -119,6 +121,11 @@ type walRecord struct {
 	At        time.Time     `json:"at"`
 }
 
+type walEnvelope struct {
+	Record   walRecord `json:"record"`
+	Checksum uint32    `json:"checksum"`
+}
+
 type snapshotRecord struct {
 	SavedAt time.Time               `json:"saved_at"`
 	Buckets map[string]gossipBucket `json:"buckets"`
@@ -142,11 +149,14 @@ type CRDTStorage struct {
 	client     *http.Client
 	bindAddr   string
 
-	persistDir    string
-	persistEnable bool
-	snapshotPath  string
-	walPath       string
-	nextSnapshot  time.Time
+	persistDir      string
+	persistEnable   bool
+	snapshotPath    string
+	walPath         string
+	nextSnapshot    time.Time
+	walSyncInterval time.Duration
+	nextWALSync     time.Time
+	walDirty        bool
 
 	walMu   sync.Mutex
 	walFile *os.File
@@ -232,6 +242,10 @@ func (s *CRDTStorage) initPersistence(cfg *CRDTConfig) error {
 
 	s.persistEnable = true
 	s.persistDir = cfg.PersistDir
+	s.walSyncInterval = cfg.WALSyncInterval
+	if s.walSyncInterval <= 0 {
+		s.walSyncInterval = defaultCRDTWALSyncInterval
+	}
 
 	base := sanitizePathComponent(s.nodeID)
 	if base == "" {
@@ -254,6 +268,8 @@ func (s *CRDTStorage) initPersistence(cfg *CRDTConfig) error {
 	}
 	s.walFile = walFile
 	s.nextSnapshot = s.clock.Now().Add(s.snapshotInterval)
+	s.nextWALSync = s.clock.Now().Add(s.walSyncInterval)
+	s.walDirty = false
 	return nil
 }
 
@@ -313,10 +329,15 @@ func (s *CRDTStorage) loadWAL() error {
 			continue
 		}
 
-		var rec walRecord
-		if err := json.Unmarshal(line, &rec); err != nil {
+		rec, ok, err := parseWALRecordFromLine(line)
+		if err != nil {
 			skipped++
 			log.Printf("crdt wal decode warning at line %d: %v (record skipped)", lineNo, err)
+			continue
+		}
+		if !ok {
+			skipped++
+			log.Printf("crdt wal decode warning at line %d: empty record (record skipped)", lineNo)
 			continue
 		}
 		switch rec.Op {
@@ -341,6 +362,29 @@ func (s *CRDTStorage) loadWAL() error {
 		log.Printf("crdt wal replay skipped %d invalid records", skipped)
 	}
 	return nil
+}
+
+func parseWALRecordFromLine(line []byte) (walRecord, bool, error) {
+	var env walEnvelope
+	if err := json.Unmarshal(line, &env); err == nil && (env.Record.Op != "" || env.Checksum != 0) {
+		expected, err := checksumWALRecord(env.Record)
+		if err != nil {
+			return walRecord{}, false, fmt.Errorf("wal checksum encode: %w", err)
+		}
+		if expected != env.Checksum {
+			return walRecord{}, false, fmt.Errorf("wal checksum mismatch: got=%d want=%d", env.Checksum, expected)
+		}
+		return env.Record, true, nil
+	}
+
+	var rec walRecord
+	if err := json.Unmarshal(line, &rec); err != nil {
+		return walRecord{}, false, err
+	}
+	if rec.Op == "" {
+		return walRecord{}, false, nil
+	}
+	return rec, true, nil
 }
 
 func (s *CRDTStorage) startHTTPServer(bindAddr string) error {
@@ -538,6 +582,7 @@ func (s *CRDTStorage) gossipLoop() {
 			s.gossipOnce()
 			s.cleanupExpired()
 			s.maybePersistSnapshot()
+			s.maybeSyncWAL()
 		case <-s.stopCh:
 			return
 		}
@@ -742,6 +787,29 @@ func (s *CRDTStorage) maybePersistSnapshot() {
 	s.nextSnapshot = now.Add(s.snapshotInterval)
 }
 
+func (s *CRDTStorage) maybeSyncWAL() {
+	if !s.persistEnable || s.walSyncInterval <= 0 {
+		return
+	}
+
+	now := s.clock.Now()
+
+	s.walMu.Lock()
+	defer s.walMu.Unlock()
+	if s.walFile == nil || !s.walDirty {
+		return
+	}
+	if !s.nextWALSync.IsZero() && now.Before(s.nextWALSync) {
+		return
+	}
+	if err := s.walFile.Sync(); err != nil {
+		log.Printf("crdt wal sync error: %v", err)
+		return
+	}
+	s.walDirty = false
+	s.nextWALSync = now.Add(s.walSyncInterval)
+}
+
 func (s *CRDTStorage) persistSnapshot() error {
 	if !s.persistEnable {
 		return nil
@@ -794,6 +862,8 @@ func (s *CRDTStorage) rotateWALLocked() error {
 		return fmt.Errorf("reopen crdt wal after rotate: %w", err)
 	}
 	s.walFile = walFile
+	s.walDirty = false
+	s.nextWALSync = s.clock.Now().Add(s.walSyncInterval)
 	return nil
 }
 
@@ -877,9 +947,17 @@ func (s *CRDTStorage) appendWAL(rec walRecord) error {
 	if !s.persistEnable || s.walFile == nil {
 		return nil
 	}
-	data, err := json.Marshal(rec)
+	sum, err := checksumWALRecord(rec)
 	if err != nil {
-		return fmt.Errorf("marshal crdt wal record: %w", err)
+		return fmt.Errorf("checksum crdt wal record: %w", err)
+	}
+
+	data, err := json.Marshal(walEnvelope{
+		Record:   rec,
+		Checksum: sum,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal crdt wal envelope: %w", err)
 	}
 
 	s.walMu.Lock()
@@ -887,7 +965,24 @@ func (s *CRDTStorage) appendWAL(rec walRecord) error {
 	if _, err := s.walFile.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("write crdt wal record: %w", err)
 	}
+	s.walDirty = true
+	if s.walSyncInterval <= 0 {
+		if err := s.walFile.Sync(); err != nil {
+			return fmt.Errorf("sync crdt wal: %w", err)
+		}
+		s.walDirty = false
+	} else if s.nextWALSync.IsZero() {
+		s.nextWALSync = s.clock.Now().Add(s.walSyncInterval)
+	}
 	return nil
+}
+
+func checksumWALRecord(rec walRecord) (uint32, error) {
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return 0, err
+	}
+	return crc32.ChecksumIEEE(b), nil
 }
 
 func (s *CRDTStorage) applyDelete(bucketKey string) {

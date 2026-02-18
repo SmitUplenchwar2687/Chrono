@@ -416,6 +416,57 @@ func TestCRDTStorage_Persistence_WALReplay_IgnoresTruncatedTail_NoNetwork(t *tes
 	}
 }
 
+func TestCRDTStorage_Persistence_WALReplay_SkipsChecksumMismatch_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "wal-checksum-node"
+	s := newCRDTStorageWithoutNetwork(nodeID)
+
+	keyGood, resetGood := s.bucketKey("wal-good", time.Hour, time.Now().UTC())
+	keyBad, resetBad := s.bucketKey("wal-bad", time.Hour, time.Now().UTC())
+
+	recGood := walRecord{
+		Op:        "upsert",
+		BucketKey: keyGood,
+		Bucket: &gossipBucket{
+			Counts:  map[string]int64{"node-a": 5},
+			Version: map[string]int64{"node-a": 5},
+			ResetAt: resetGood,
+		},
+		At: time.Now().UTC(),
+	}
+	recBad := walRecord{
+		Op:        "upsert",
+		BucketKey: keyBad,
+		Bucket: &gossipBucket{
+			Counts:  map[string]int64{"node-b": 7},
+			Version: map[string]int64{"node-b": 7},
+			ResetAt: resetBad,
+		},
+		At: time.Now().UTC(),
+	}
+
+	goodLine := mustWALEnvelopeLine(t, recGood, false)
+	badLine := mustWALEnvelopeLine(t, recBad, true)
+	writeWALFixture(t, walPathForNode(dir, nodeID), []string{goodLine, badLine})
+
+	recovered := newCRDTStorageWithoutNetwork(nodeID)
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() error = %v", err)
+	}
+	defer closeWALFile(t, recovered)
+
+	if total := totalForBucket(recovered, keyGood); total != 5 {
+		t.Fatalf("recovered total for keyGood = %d, want 5", total)
+	}
+	if total := totalForBucket(recovered, keyBad); total != 0 {
+		t.Fatalf("recovered total for keyBad = %d, want 0", total)
+	}
+}
+
 func TestCRDTStorage_Persistence_SnapshotCompactsWAL_NoNetwork(t *testing.T) {
 	dir := t.TempDir()
 	nodeID := "wal-compact-node"
@@ -643,6 +694,21 @@ func writeWALFixture(t *testing.T, walPath string, lines []string) {
 	if err := os.WriteFile(walPath, []byte(data), 0o644); err != nil {
 		t.Fatalf("write wal fixture: %v", err)
 	}
+}
+
+func mustWALEnvelopeLine(t *testing.T, rec walRecord, corruptChecksum bool) string {
+	t.Helper()
+	sum, err := checksumWALRecord(rec)
+	if err != nil {
+		t.Fatalf("checksum wal record: %v", err)
+	}
+	if corruptChecksum {
+		sum++
+	}
+	return mustJSONLine(t, walEnvelope{
+		Record:   rec,
+		Checksum: sum,
+	})
 }
 
 func closeWALFile(t *testing.T, s *CRDTStorage) {

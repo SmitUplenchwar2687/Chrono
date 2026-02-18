@@ -63,6 +63,7 @@ type CRDTConfig struct {
 	GossipInterval   time.Duration     `json:"gossip_interval" yaml:"gossip_interval"`
 	PersistDir       string            `json:"persist_dir,omitempty" yaml:"persist_dir,omitempty"`
 	SnapshotInterval time.Duration     `json:"snapshot_interval,omitempty" yaml:"snapshot_interval,omitempty"`
+	WALSyncInterval  time.Duration     `json:"wal_sync_interval,omitempty" yaml:"wal_sync_interval,omitempty"`
 	Clock            chronoclock.Clock `json:"-" yaml:"-"`
 }
 

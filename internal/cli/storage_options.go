@@ -31,6 +31,7 @@ type storageOptions struct {
 	crdtGossipInterval    time.Duration
 	crdtPersistDir        string
 	crdtSnapshotInterval  time.Duration
+	crdtWALSyncInterval   time.Duration
 }
 
 func defaultStorageOptions() storageOptions {
@@ -46,6 +47,7 @@ func defaultStorageOptions() storageOptions {
 		crdtBindAddr:          ":8081",
 		crdtGossipInterval:    time.Second,
 		crdtSnapshotInterval:  30 * time.Second,
+		crdtWALSyncInterval:   time.Second,
 	}
 }
 
@@ -67,6 +69,7 @@ func (o *storageOptions) addFlags(cmd *cobra.Command) {
 	cmd.Flags().DurationVar(&o.crdtGossipInterval, "crdt-gossip-interval", time.Second, "CRDT gossip interval")
 	cmd.Flags().StringVar(&o.crdtPersistDir, "crdt-persist-dir", "", "CRDT persistence directory for snapshot/WAL state")
 	cmd.Flags().DurationVar(&o.crdtSnapshotInterval, "crdt-snapshot-interval", 30*time.Second, "CRDT snapshot interval when persistence is enabled")
+	cmd.Flags().DurationVar(&o.crdtWALSyncInterval, "crdt-wal-sync-interval", time.Second, "CRDT WAL fsync interval")
 }
 
 func (o *storageOptions) applyConfigIfUnset(cmd *cobra.Command, cfg *config.StorageConfig) {
@@ -125,6 +128,9 @@ func (o *storageOptions) applyConfigIfUnset(cmd *cobra.Command, cfg *config.Stor
 	if !cmd.Flags().Changed("crdt-snapshot-interval") {
 		o.crdtSnapshotInterval = cfg.CRDT.SnapshotInterval
 	}
+	if !cmd.Flags().Changed("crdt-wal-sync-interval") {
+		o.crdtWALSyncInterval = cfg.CRDT.WALSyncInterval
+	}
 }
 
 func (o *storageOptions) normalize() error {
@@ -166,6 +172,7 @@ func (o *storageOptions) toConfig(burst int) config.StorageConfig {
 			GossipInterval:   o.crdtGossipInterval,
 			PersistDir:       o.crdtPersistDir,
 			SnapshotInterval: o.crdtSnapshotInterval,
+			WALSyncInterval:  o.crdtWALSyncInterval,
 		},
 	}
 }

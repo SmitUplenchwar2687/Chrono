@@ -204,6 +204,7 @@ func createServerLimiter(
 			GossipInterval:   storageCfg.CRDT.GossipInterval,
 			PersistDir:       storageCfg.CRDT.PersistDir,
 			SnapshotInterval: storageCfg.CRDT.SnapshotInterval,
+			WALSyncInterval:  storageCfg.CRDT.WALSyncInterval,
 			Clock:            clk,
 		}
 	default:

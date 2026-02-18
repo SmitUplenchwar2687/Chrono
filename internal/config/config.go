@@ -58,6 +58,7 @@ type StorageCRDTConfig struct {
 	GossipInterval   time.Duration `json:"gossip_interval"`
 	PersistDir       string        `json:"persist_dir,omitempty"`
 	SnapshotInterval time.Duration `json:"snapshot_interval,omitempty"`
+	WALSyncInterval  time.Duration `json:"wal_sync_interval,omitempty"`
 }
 
 // Default returns a Config with sensible defaults.
@@ -84,6 +85,7 @@ func Default() Config {
 			CRDT: StorageCRDTConfig{
 				BindAddr:         ":8081",
 				SnapshotInterval: 30 * time.Second,
+				WALSyncInterval:  time.Second,
 			},
 		},
 	}
@@ -139,6 +141,9 @@ func (c *Config) Validate() error {
 		}
 		if c.Storage.CRDT.SnapshotInterval < 0 {
 			return fmt.Errorf("storage.crdt.snapshot_interval must be non-negative, got %s", c.Storage.CRDT.SnapshotInterval)
+		}
+		if c.Storage.CRDT.WALSyncInterval < 0 {
+			return fmt.Errorf("storage.crdt.wal_sync_interval must be non-negative, got %s", c.Storage.CRDT.WALSyncInterval)
 		}
 	default:
 		return fmt.Errorf("unknown storage backend %q, must be one of: memory, redis, crdt", backend)
@@ -255,6 +260,13 @@ func LoadFile(path string) (Config, error) {
 		}
 		cfg.Storage.CRDT.SnapshotInterval = d
 	}
+	if raw.Storage.CRDT.WALSyncInterval != "" {
+		d, err := time.ParseDuration(raw.Storage.CRDT.WALSyncInterval)
+		if err != nil {
+			return cfg, fmt.Errorf("parsing storage.crdt.wal_sync_interval: %w", err)
+		}
+		cfg.Storage.CRDT.WALSyncInterval = d
+	}
 
 	return cfg, nil
 }
@@ -295,6 +307,7 @@ type rawConfig struct {
 			GossipInterval   string   `json:"gossip_interval"`
 			PersistDir       string   `json:"persist_dir"`
 			SnapshotInterval string   `json:"snapshot_interval"`
+			WALSyncInterval  string   `json:"wal_sync_interval"`
 		} `json:"crdt"`
 	} `json:"storage"`
 }
