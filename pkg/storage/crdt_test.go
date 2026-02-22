@@ -586,7 +586,7 @@ func TestCRDTStorage_Persistence_LockPreventsSecondWriter_NoNetwork(t *testing.T
 	}); err != nil {
 		t.Fatalf("initPersistence() after lock release should succeed, got: %v", err)
 	}
-	defer closePersistenceResources(t, s3)
+	closePersistenceResources(t, s3)
 }
 
 func TestCRDTStorage_Persistence_LoadSnapshot_UnsupportedVersion_NoNetwork(t *testing.T) {

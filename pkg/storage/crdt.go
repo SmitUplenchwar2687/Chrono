@@ -302,7 +302,7 @@ func (s *CRDTStorage) acquirePersistenceLock(base string) error {
 		}
 		return fmt.Errorf("open crdt persist lock: %w", err)
 	}
-	if _, werr := lockFile.WriteString(fmt.Sprintf("node_id=%s pid=%d\n", s.nodeID, os.Getpid())); werr != nil {
+	if _, werr := fmt.Fprintf(lockFile, "node_id=%s pid=%d\n", s.nodeID, os.Getpid()); werr != nil {
 		lockFile.Close()
 		_ = os.Remove(s.lockPath)
 		return fmt.Errorf("write crdt persist lock: %w", werr)
