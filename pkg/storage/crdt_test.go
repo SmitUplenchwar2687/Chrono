@@ -240,7 +240,7 @@ func TestCRDTStorage_Persistence_WALRecovery_NoNetwork(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("initPersistence() error = %v", err)
 	}
-	defer closeWALFile(t, s)
+	defer closePersistenceResources(t, s)
 
 	bucketKey, resetAt := s.bucketKey("wal-user", time.Hour, time.Now().UTC())
 	changed := s.mergeSnapshot(map[string]gossipBucket{
@@ -251,6 +251,7 @@ func TestCRDTStorage_Persistence_WALRecovery_NoNetwork(t *testing.T) {
 		},
 	})
 	s.persistBuckets(changed)
+	closePersistenceResources(t, s)
 
 	recovered := newCRDTStorageWithoutNetwork("persist-node")
 	if err := recovered.initPersistence(&CRDTConfig{
@@ -260,7 +261,7 @@ func TestCRDTStorage_Persistence_WALRecovery_NoNetwork(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("recovered initPersistence() error = %v", err)
 	}
-	defer closeWALFile(t, recovered)
+	defer closePersistenceResources(t, recovered)
 
 	if total := totalForBucket(recovered, bucketKey); total != 3 {
 		t.Fatalf("recovered total = %d, want 3", total)
@@ -277,7 +278,7 @@ func TestCRDTStorage_Persistence_SnapshotAndDeleteRecovery_NoNetwork(t *testing.
 	}); err != nil {
 		t.Fatalf("initPersistence() error = %v", err)
 	}
-	defer closeWALFile(t, s)
+	defer closePersistenceResources(t, s)
 
 	keepKey, keepReset := s.bucketKey("keep-user", time.Hour, time.Now().UTC())
 	deleteKey, delReset := s.bucketKey("delete-user", time.Hour, time.Now().UTC())
@@ -305,6 +306,7 @@ func TestCRDTStorage_Persistence_SnapshotAndDeleteRecovery_NoNetwork(t *testing.
 	if _, err := os.Stat(filepath.Join(dir, "snapshot-node.snapshot.json")); err != nil {
 		t.Fatalf("snapshot file missing: %v", err)
 	}
+	closePersistenceResources(t, s)
 
 	recovered := newCRDTStorageWithoutNetwork("snapshot-node")
 	if err := recovered.initPersistence(&CRDTConfig{
@@ -314,7 +316,7 @@ func TestCRDTStorage_Persistence_SnapshotAndDeleteRecovery_NoNetwork(t *testing.
 	}); err != nil {
 		t.Fatalf("recovered initPersistence() error = %v", err)
 	}
-	defer closeWALFile(t, recovered)
+	defer closePersistenceResources(t, recovered)
 
 	if total := totalForBucket(recovered, keepKey); total != 2 {
 		t.Fatalf("recovered keep total = %d, want 2", total)
@@ -368,7 +370,7 @@ func TestCRDTStorage_Persistence_WALReplay_SkipsCorruptAndContinues_NoNetwork(t 
 	}); err != nil {
 		t.Fatalf("initPersistence() error = %v", err)
 	}
-	defer closeWALFile(t, recovered)
+	defer closePersistenceResources(t, recovered)
 
 	if total := totalForBucket(recovered, keyA); total != 1 {
 		t.Fatalf("recovered total for keyA = %d, want 1", total)
@@ -409,7 +411,7 @@ func TestCRDTStorage_Persistence_WALReplay_IgnoresTruncatedTail_NoNetwork(t *tes
 	}); err != nil {
 		t.Fatalf("initPersistence() error = %v", err)
 	}
-	defer closeWALFile(t, recovered)
+	defer closePersistenceResources(t, recovered)
 
 	if total := totalForBucket(recovered, key); total != 4 {
 		t.Fatalf("recovered total = %d, want 4", total)
@@ -457,7 +459,7 @@ func TestCRDTStorage_Persistence_WALReplay_SkipsChecksumMismatch_NoNetwork(t *te
 	}); err != nil {
 		t.Fatalf("initPersistence() error = %v", err)
 	}
-	defer closeWALFile(t, recovered)
+	defer closePersistenceResources(t, recovered)
 
 	if total := totalForBucket(recovered, keyGood); total != 5 {
 		t.Fatalf("recovered total for keyGood = %d, want 5", total)
@@ -478,7 +480,7 @@ func TestCRDTStorage_Persistence_SnapshotCompactsWAL_NoNetwork(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("initPersistence() error = %v", err)
 	}
-	defer closeWALFile(t, s)
+	defer closePersistenceResources(t, s)
 
 	keyA, resetA := s.bucketKey("compact-a", time.Hour, time.Now().UTC())
 	keyB, resetB := s.bucketKey("compact-b", time.Hour, time.Now().UTC())
@@ -519,6 +521,7 @@ func TestCRDTStorage_Persistence_SnapshotCompactsWAL_NoNetwork(t *testing.T) {
 			ResetAt: resetB,
 		},
 	}))
+	closePersistenceResources(t, s)
 
 	recovered := newCRDTStorageWithoutNetwork(nodeID)
 	if err := recovered.initPersistence(&CRDTConfig{
@@ -528,7 +531,7 @@ func TestCRDTStorage_Persistence_SnapshotCompactsWAL_NoNetwork(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("recovered initPersistence() error = %v", err)
 	}
-	defer closeWALFile(t, recovered)
+	defer closePersistenceResources(t, recovered)
 
 	if total := totalForBucket(recovered, keyA); total != 2 {
 		t.Fatalf("recovered total for keyA = %d, want 2", total)
@@ -544,6 +547,101 @@ func TestNormalizePeerURL(t *testing.T) {
 	}
 	if got := normalizePeerURL("http://127.0.0.1:8081"); got != "http://127.0.0.1:8081" {
 		t.Fatalf("normalizePeerURL should keep http URL, got %q", got)
+	}
+}
+
+func TestCRDTStorage_Persistence_LockPreventsSecondWriter_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "lock-node"
+
+	s1 := newCRDTStorageWithoutNetwork(nodeID)
+	if err := s1.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("first initPersistence() error = %v", err)
+	}
+	defer closePersistenceResources(t, s1)
+
+	s2 := newCRDTStorageWithoutNetwork(nodeID)
+	err := s2.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected lock contention error for second writer")
+	}
+	if !strings.Contains(err.Error(), "lock exists") {
+		t.Fatalf("unexpected lock contention error: %v", err)
+	}
+
+	closePersistenceResources(t, s1)
+	s3 := newCRDTStorageWithoutNetwork(nodeID)
+	if err := s3.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() after lock release should succeed, got: %v", err)
+	}
+	defer closePersistenceResources(t, s3)
+}
+
+func TestCRDTStorage_Persistence_LoadSnapshot_UnsupportedVersion_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "snapshot-version-node"
+	snapshotPath := snapshotPathForNode(dir, nodeID)
+	payload := `{"version":999,"saved_at":"2026-01-01T00:00:00Z","buckets":{}}`
+	if err := os.WriteFile(snapshotPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write snapshot fixture: %v", err)
+	}
+
+	s := newCRDTStorageWithoutNetwork(nodeID)
+	err := s.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected unsupported snapshot schema version error")
+	}
+	if !strings.Contains(err.Error(), "unsupported snapshot schema version") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCRDTStorage_Persistence_LoadWAL_UnsupportedVersion_Fails_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "wal-version-node"
+	s := newCRDTStorageWithoutNetwork(nodeID)
+	key, resetAt := s.bucketKey("wal-version", time.Hour, time.Now().UTC())
+	rec := walRecord{
+		Op:        "upsert",
+		BucketKey: key,
+		Bucket: &gossipBucket{
+			Counts:  map[string]int64{"node-a": 2},
+			Version: map[string]int64{"node-a": 2},
+			ResetAt: resetAt,
+		},
+		At: time.Now().UTC(),
+	}
+	writeWALFixture(t, walPathForNode(dir, nodeID), []string{
+		mustWALEnvelopeLineWithVersion(t, rec, 999, false),
+	})
+
+	recovered := newCRDTStorageWithoutNetwork(nodeID)
+	err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected unsupported wal schema version error")
+	}
+	if !strings.Contains(err.Error(), "unsupported wal schema version") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -676,6 +774,10 @@ func walPathForNode(dir, nodeID string) string {
 	return filepath.Join(dir, sanitizePathComponent(nodeID)+".wal.jsonl")
 }
 
+func snapshotPathForNode(dir, nodeID string) string {
+	return filepath.Join(dir, sanitizePathComponent(nodeID)+".snapshot.json")
+}
+
 func mustJSONLine(t *testing.T, v interface{}) string {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -697,6 +799,10 @@ func writeWALFixture(t *testing.T, walPath string, lines []string) {
 }
 
 func mustWALEnvelopeLine(t *testing.T, rec walRecord, corruptChecksum bool) string {
+	return mustWALEnvelopeLineWithVersion(t, rec, walSchemaVersion, corruptChecksum)
+}
+
+func mustWALEnvelopeLineWithVersion(t *testing.T, rec walRecord, version int, corruptChecksum bool) string {
 	t.Helper()
 	sum, err := checksumWALRecord(rec)
 	if err != nil {
@@ -706,19 +812,27 @@ func mustWALEnvelopeLine(t *testing.T, rec walRecord, corruptChecksum bool) stri
 		sum++
 	}
 	return mustJSONLine(t, walEnvelope{
+		Version:  version,
 		Record:   rec,
 		Checksum: sum,
 	})
 }
 
-func closeWALFile(t *testing.T, s *CRDTStorage) {
+func closePersistenceResources(t *testing.T, s *CRDTStorage) {
 	t.Helper()
+	if s == nil {
+		return
+	}
 	s.walMu.Lock()
-	defer s.walMu.Unlock()
 	if s.walFile != nil {
 		if err := s.walFile.Close(); err != nil {
+			s.walMu.Unlock()
 			t.Fatalf("close wal file: %v", err)
 		}
 		s.walFile = nil
+	}
+	s.walMu.Unlock()
+	if err := s.releasePersistenceLock(); err != nil {
+		t.Fatalf("release persistence lock: %v", err)
 	}
 }

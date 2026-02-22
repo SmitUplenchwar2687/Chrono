@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -25,6 +26,8 @@ import (
 const defaultCRDTGossipInterval = time.Second
 const defaultCRDTSnapshotInterval = 30 * time.Second
 const defaultCRDTWALSyncInterval = time.Second
+const snapshotSchemaVersion = 2
+const walSchemaVersion = 2
 
 // GCounter is a grow-only counter CRDT.
 // It keeps per-node counts and merges by taking max per node.
@@ -122,11 +125,13 @@ type walRecord struct {
 }
 
 type walEnvelope struct {
+	Version  int       `json:"version,omitempty"`
 	Record   walRecord `json:"record"`
 	Checksum uint32    `json:"checksum"`
 }
 
 type snapshotRecord struct {
+	Version int                     `json:"version,omitempty"`
 	SavedAt time.Time               `json:"saved_at"`
 	Buckets map[string]gossipBucket `json:"buckets"`
 }
@@ -151,6 +156,7 @@ type CRDTStorage struct {
 
 	persistDir      string
 	persistEnable   bool
+	lockPath        string
 	snapshotPath    string
 	walPath         string
 	nextSnapshot    time.Time
@@ -158,8 +164,9 @@ type CRDTStorage struct {
 	nextWALSync     time.Time
 	walDirty        bool
 
-	walMu   sync.Mutex
-	walFile *os.File
+	walMu    sync.Mutex
+	walFile  *os.File
+	lockFile *os.File
 
 	stopCh    chan struct{}
 	doneCh    chan struct{}
@@ -224,6 +231,7 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 			s.walFile = nil
 		}
 		s.walMu.Unlock()
+		_ = s.releasePersistenceLock()
 		return nil, err
 	}
 
@@ -231,7 +239,7 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 	return s, nil
 }
 
-func (s *CRDTStorage) initPersistence(cfg *CRDTConfig) error {
+func (s *CRDTStorage) initPersistence(cfg *CRDTConfig) (err error) {
 	if cfg == nil || cfg.PersistDir == "" {
 		return nil
 	}
@@ -243,7 +251,10 @@ func (s *CRDTStorage) initPersistence(cfg *CRDTConfig) error {
 	s.persistEnable = true
 	s.persistDir = cfg.PersistDir
 	s.walSyncInterval = cfg.WALSyncInterval
-	if s.walSyncInterval <= 0 {
+	if s.walSyncInterval < 0 {
+		return fmt.Errorf("crdt wal sync interval must be non-negative, got %s", s.walSyncInterval)
+	}
+	if s.walSyncInterval == 0 {
 		s.walSyncInterval = defaultCRDTWALSyncInterval
 	}
 
@@ -251,6 +262,15 @@ func (s *CRDTStorage) initPersistence(cfg *CRDTConfig) error {
 	if base == "" {
 		base = "node"
 	}
+	if err := s.acquirePersistenceLock(base); err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = s.releasePersistenceLock()
+		}
+	}()
+
 	s.snapshotPath = filepath.Join(s.persistDir, base+".snapshot.json")
 	s.walPath = filepath.Join(s.persistDir, base+".wal.jsonl")
 
@@ -271,6 +291,40 @@ func (s *CRDTStorage) initPersistence(cfg *CRDTConfig) error {
 	s.nextWALSync = s.clock.Now().Add(s.walSyncInterval)
 	s.walDirty = false
 	return nil
+}
+
+func (s *CRDTStorage) acquirePersistenceLock(base string) error {
+	s.lockPath = filepath.Join(s.persistDir, base+".lock")
+	lockFile, err := os.OpenFile(s.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("crdt persist lock exists at %s (another node may be using this persist dir)", s.lockPath)
+		}
+		return fmt.Errorf("open crdt persist lock: %w", err)
+	}
+	if _, werr := lockFile.WriteString(fmt.Sprintf("node_id=%s pid=%d\n", s.nodeID, os.Getpid())); werr != nil {
+		lockFile.Close()
+		_ = os.Remove(s.lockPath)
+		return fmt.Errorf("write crdt persist lock: %w", werr)
+	}
+	s.lockFile = lockFile
+	return nil
+}
+
+func (s *CRDTStorage) releasePersistenceLock() error {
+	var retErr error
+	if s.lockFile != nil {
+		if err := s.lockFile.Close(); err != nil {
+			retErr = err
+		}
+		s.lockFile = nil
+	}
+	if s.lockPath != "" {
+		if err := os.Remove(s.lockPath); err != nil && !os.IsNotExist(err) && retErr == nil {
+			retErr = err
+		}
+	}
+	return retErr
 }
 
 func sanitizePathComponent(in string) string {
@@ -301,11 +355,30 @@ func (s *CRDTStorage) loadSnapshot() error {
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return fmt.Errorf("decode crdt snapshot: %w", err)
 	}
+	if err := normalizeSnapshotRecord(&rec); err != nil {
+		return err
+	}
 	if len(rec.Buckets) == 0 {
 		return nil
 	}
 	_ = s.mergeSnapshot(rec.Buckets)
 	return nil
+}
+
+func normalizeSnapshotRecord(rec *snapshotRecord) error {
+	if rec == nil {
+		return fmt.Errorf("snapshot record is nil")
+	}
+	if rec.Version == 0 {
+		// Legacy snapshot (pre-version header).
+		rec.Version = 1
+	}
+	switch rec.Version {
+	case 1, snapshotSchemaVersion:
+		return nil
+	default:
+		return fmt.Errorf("unsupported snapshot schema version %d", rec.Version)
+	}
 }
 
 func (s *CRDTStorage) loadWAL() error {
@@ -331,6 +404,9 @@ func (s *CRDTStorage) loadWAL() error {
 
 		rec, ok, err := parseWALRecordFromLine(line)
 		if err != nil {
+			if isFatalWALParseError(err) {
+				return fmt.Errorf("crdt wal fatal parse error at line %d: %w", lineNo, err)
+			}
 			skipped++
 			log.Printf("crdt wal decode warning at line %d: %v (record skipped)", lineNo, err)
 			continue
@@ -364,9 +440,38 @@ func (s *CRDTStorage) loadWAL() error {
 	return nil
 }
 
+type walParseError struct {
+	msg   string
+	fatal bool
+}
+
+func (e walParseError) Error() string { return e.msg }
+
+func isFatalWALParseError(err error) bool {
+	var pe walParseError
+	if !errors.As(err, &pe) {
+		return false
+	}
+	return pe.fatal
+}
+
 func parseWALRecordFromLine(line []byte) (walRecord, bool, error) {
 	var env walEnvelope
-	if err := json.Unmarshal(line, &env); err == nil && (env.Record.Op != "" || env.Checksum != 0) {
+	if err := json.Unmarshal(line, &env); err == nil && (env.Record.Op != "" || env.Checksum != 0 || env.Version != 0) {
+		version := env.Version
+		if version == 0 {
+			// Legacy envelope (pre-version header).
+			version = 1
+		}
+		switch version {
+		case 1, walSchemaVersion:
+		default:
+			return walRecord{}, false, walParseError{
+				msg:   fmt.Sprintf("unsupported wal schema version %d", version),
+				fatal: true,
+			}
+		}
+
 		expected, err := checksumWALRecord(env.Record)
 		if err != nil {
 			return walRecord{}, false, fmt.Errorf("wal checksum encode: %w", err)
@@ -384,6 +489,7 @@ func parseWALRecordFromLine(line []byte) (walRecord, bool, error) {
 	if rec.Op == "" {
 		return walRecord{}, false, nil
 	}
+	// Legacy raw walRecord line (pre-envelope/checksum format).
 	return rec, true, nil
 }
 
@@ -819,6 +925,7 @@ func (s *CRDTStorage) persistSnapshot() error {
 	defer s.walMu.Unlock()
 
 	rec := snapshotRecord{
+		Version: snapshotSchemaVersion,
 		SavedAt: time.Now().UTC(),
 		Buckets: s.snapshotBuckets(),
 	}
@@ -953,6 +1060,7 @@ func (s *CRDTStorage) appendWAL(rec walRecord) error {
 	}
 
 	data, err := json.Marshal(walEnvelope{
+		Version:  walSchemaVersion,
 		Record:   rec,
 		Checksum: sum,
 	})
@@ -1047,6 +1155,9 @@ func (s *CRDTStorage) Close() error {
 			s.walFile = nil
 		}
 		s.walMu.Unlock()
+		if err := s.releasePersistenceLock(); err != nil && retErr == nil {
+			retErr = err
+		}
 		if s.httpServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
