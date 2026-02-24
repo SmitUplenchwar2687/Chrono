@@ -209,6 +209,9 @@ Storage-related flags:
 | `--crdt-bind-addr` | `:8081` | CRDT gossip bind address |
 | `--crdt-peers` | (none) | CRDT peer addresses |
 | `--crdt-gossip-interval` | `1s` | CRDT gossip interval |
+| `--crdt-persist-dir` | `""` | CRDT persistence directory for snapshot/WAL |
+| `--crdt-snapshot-interval` | `30s` | CRDT snapshot interval |
+| `--crdt-wal-sync-interval` | `1s` | CRDT WAL fsync interval |
 
 Example config (`chrono.json`) with Redis:
 
@@ -260,7 +263,7 @@ All storage flags from `chrono server` are also available on `chrono test` and `
 |---------|------------------|-------------------|-------------|-------|
 | `memory` | Local dev, unit tests, single-instance runs | `token_bucket`, `sliding_window`, `fixed_window` | Strong (single process) | Fastest and simplest; not shared across processes |
 | `redis` | Production distributed deployments | `sliding_window` | Strong per-key atomicity (Lua) | Best production default; supports shared limits across instances |
-| `crdt` | Multi-node experiments and research | `sliding_window` (approximate) | Eventual consistency | Experimental, no persistence, no vector clocks |
+| `crdt` | Multi-node experiments and research | `sliding_window` (approximate) | Eventual consistency | Experimental; supports vector-clock-aware merge and optional snapshot/WAL persistence |
 
 When to choose:
 
@@ -273,6 +276,12 @@ Performance characteristics:
 - `memory`: lowest latency, process-local only.
 - `redis`: network round-trip + Redis command latency, horizontally scalable.
 - `crdt`: local write fast, convergence depends on gossip interval and peer health.
+
+CRDT persistence settings (optional):
+
+- `storage.crdt.persist_dir`: enable local durability using snapshot + WAL files.
+- `storage.crdt.snapshot_interval`: snapshot cadence (default `30s`).
+- `storage.crdt.wal_sync_interval`: fsync cadence for WAL durability (default `1s`).
 
 ## Algorithms
 

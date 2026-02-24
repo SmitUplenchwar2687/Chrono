@@ -8,6 +8,18 @@ type Config = internalconfig.Config
 // ServerConfig holds HTTP server settings.
 type ServerConfig = internalconfig.ServerConfig
 
+// StorageConfig holds pluggable storage backend settings.
+type StorageConfig = internalconfig.StorageConfig
+
+// StorageMemoryConfig configures the in-memory storage backend.
+type StorageMemoryConfig = internalconfig.StorageMemoryConfig
+
+// StorageRedisConfig configures the Redis storage backend.
+type StorageRedisConfig = internalconfig.StorageRedisConfig
+
+// StorageCRDTConfig configures the CRDT storage backend.
+type StorageCRDTConfig = internalconfig.StorageCRDTConfig
+
 // Default returns a Config with sensible defaults.
 func Default() Config {
 	return internalconfig.Default()
