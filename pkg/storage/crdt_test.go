@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +29,31 @@ func TestCRDTStorage_NewCRDTStorage_Validation(t *testing.T) {
 	_, err = NewCRDTStorage(&CRDTConfig{NodeID: "n1"})
 	if err == nil {
 		t.Fatal("expected error for missing bind_addr")
+	}
+}
+
+func TestCRDTStorage_LogStartupWarnings_InMemory(t *testing.T) {
+	s := newCRDTStorageWithoutNetwork("warn-inmem")
+	out := captureLogOutput(t, s.logStartupWarnings)
+
+	if !strings.Contains(out, "In-memory only (no persistence)") {
+		t.Fatalf("expected in-memory warning, got logs:\n%s", out)
+	}
+	if strings.Contains(out, "Local snapshot/WAL persistence enabled") {
+		t.Fatalf("did not expect persistence-enabled warning, got logs:\n%s", out)
+	}
+}
+
+func TestCRDTStorage_LogStartupWarnings_PersistenceEnabled(t *testing.T) {
+	s := newCRDTStorageWithoutNetwork("warn-persist")
+	s.persistEnable = true
+	out := captureLogOutput(t, s.logStartupWarnings)
+
+	if !strings.Contains(out, "Local snapshot/WAL persistence enabled") {
+		t.Fatalf("expected persistence-enabled warning, got logs:\n%s", out)
+	}
+	if strings.Contains(out, "In-memory only (no persistence)") {
+		t.Fatalf("did not expect in-memory warning, got logs:\n%s", out)
 	}
 }
 
@@ -835,4 +862,24 @@ func closePersistenceResources(t *testing.T, s *CRDTStorage) {
 	if err := s.releasePersistenceLock(); err != nil {
 		t.Fatalf("release persistence lock: %v", err)
 	}
+}
+
+func captureLogOutput(t *testing.T, fn func()) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	defer func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	}()
+
+	fn()
+	return buf.String()
 }

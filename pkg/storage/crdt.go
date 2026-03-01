@@ -216,13 +216,7 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 		return nil, err
 	}
 
-	log.Printf("WARNING: CRDT storage is EXPERIMENTAL - known limitations:")
-	log.Printf("WARNING: - Eventual consistency (temporary drift is expected)")
-	log.Printf("WARNING: - Simple HTTP polling gossip (not production-grade)")
-	if !s.persistEnable {
-		log.Printf("WARNING: - In-memory only (no persistence)")
-	}
-	log.Printf("WARNING: - Use Redis for production deployments")
+	s.logStartupWarnings()
 
 	if err := s.startHTTPServer(cfg.BindAddr); err != nil {
 		s.walMu.Lock()
@@ -237,6 +231,18 @@ func NewCRDTStorage(cfg *CRDTConfig) (*CRDTStorage, error) {
 
 	go s.gossipLoop()
 	return s, nil
+}
+
+func (s *CRDTStorage) logStartupWarnings() {
+	log.Printf("WARNING: CRDT storage is EXPERIMENTAL - known limitations:")
+	log.Printf("WARNING: - Eventual consistency (temporary drift is expected)")
+	log.Printf("WARNING: - Simple HTTP polling gossip (not production-grade)")
+	if s.persistEnable {
+		log.Printf("WARNING: - Local snapshot/WAL persistence enabled")
+	} else {
+		log.Printf("WARNING: - In-memory only (no persistence)")
+	}
+	log.Printf("WARNING: - Use Redis for production deployments")
 }
 
 func (s *CRDTStorage) initPersistence(cfg *CRDTConfig) (err error) {
