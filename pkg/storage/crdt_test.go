@@ -639,6 +639,46 @@ func TestCRDTStorage_Persistence_LoadSnapshot_UnsupportedVersion_NoNetwork(t *te
 	}
 }
 
+func TestCRDTStorage_Persistence_LoadSnapshot_LegacyVersion_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "snapshot-legacy-node"
+	s := newCRDTStorageWithoutNetwork(nodeID)
+	key, resetAt := s.bucketKey("snapshot-legacy", time.Hour, time.Now().UTC())
+
+	// Version omitted simulates legacy snapshot schema.
+	payload := snapshotRecord{
+		SavedAt: time.Now().UTC(),
+		Buckets: map[string]gossipBucket{
+			key: {
+				Counts:  map[string]int64{"node-a": 3},
+				Version: map[string]int64{"node-a": 3},
+				ResetAt: resetAt,
+			},
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal legacy snapshot payload: %v", err)
+	}
+	if err := os.WriteFile(snapshotPathForNode(dir, nodeID), data, 0o644); err != nil {
+		t.Fatalf("write snapshot fixture: %v", err)
+	}
+
+	recovered := newCRDTStorageWithoutNetwork(nodeID)
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() with legacy snapshot should succeed, got: %v", err)
+	}
+	defer closePersistenceResources(t, recovered)
+
+	if total := totalForBucket(recovered, key); total != 3 {
+		t.Fatalf("recovered total = %d, want 3", total)
+	}
+}
+
 func TestCRDTStorage_Persistence_LoadWAL_UnsupportedVersion_Fails_NoNetwork(t *testing.T) {
 	dir := t.TempDir()
 	nodeID := "wal-version-node"
@@ -669,6 +709,74 @@ func TestCRDTStorage_Persistence_LoadWAL_UnsupportedVersion_Fails_NoNetwork(t *t
 	}
 	if !strings.Contains(err.Error(), "unsupported wal schema version") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCRDTStorage_Persistence_LoadWAL_Version1EnvelopeAccepted_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "wal-v1-node"
+	s := newCRDTStorageWithoutNetwork(nodeID)
+	key, resetAt := s.bucketKey("wal-v1", time.Hour, time.Now().UTC())
+	rec := walRecord{
+		Op:        "upsert",
+		BucketKey: key,
+		Bucket: &gossipBucket{
+			Counts:  map[string]int64{"node-a": 4},
+			Version: map[string]int64{"node-a": 4},
+			ResetAt: resetAt,
+		},
+		At: time.Now().UTC(),
+	}
+	writeWALFixture(t, walPathForNode(dir, nodeID), []string{
+		mustWALEnvelopeLineWithVersion(t, rec, 1, false),
+	})
+
+	recovered := newCRDTStorageWithoutNetwork(nodeID)
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() with wal v1 should succeed, got: %v", err)
+	}
+	defer closePersistenceResources(t, recovered)
+
+	if total := totalForBucket(recovered, key); total != 4 {
+		t.Fatalf("recovered total = %d, want 4", total)
+	}
+}
+
+func TestCRDTStorage_Persistence_LoadWAL_LegacyRawRecord_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "wal-legacy-raw-node"
+	s := newCRDTStorageWithoutNetwork(nodeID)
+	key, resetAt := s.bucketKey("wal-legacy-raw", time.Hour, time.Now().UTC())
+	rec := walRecord{
+		Op:        "upsert",
+		BucketKey: key,
+		Bucket: &gossipBucket{
+			Counts:  map[string]int64{"node-a": 2},
+			Version: map[string]int64{"node-a": 2},
+			ResetAt: resetAt,
+		},
+		At: time.Now().UTC(),
+	}
+	writeWALFixture(t, walPathForNode(dir, nodeID), []string{
+		mustJSONLine(t, rec),
+	})
+
+	recovered := newCRDTStorageWithoutNetwork(nodeID)
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() with raw legacy wal record should succeed, got: %v", err)
+	}
+	defer closePersistenceResources(t, recovered)
+
+	if total := totalForBucket(recovered, key); total != 2 {
+		t.Fatalf("recovered total = %d, want 2", total)
 	}
 }
 
