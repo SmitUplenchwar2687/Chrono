@@ -568,6 +568,119 @@ func TestCRDTStorage_Persistence_SnapshotCompactsWAL_NoNetwork(t *testing.T) {
 	}
 }
 
+func TestCRDTStorage_Persistence_MaybePersistSnapshot_RespectsInterval_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "snapshot-interval-node"
+	start := time.Unix(1_700_000_000, 0).UTC()
+	vc := chronoclock.NewVirtualClock(start)
+
+	s := newCRDTStorageWithoutNetwork(nodeID)
+	s.clock = vc
+	s.snapshotInterval = 2 * time.Second
+	if err := s.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: 2 * time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() error = %v", err)
+	}
+	defer closePersistenceResources(t, s)
+
+	key, resetAt := s.bucketKey("snapshot-interval", time.Hour, start)
+	s.persistBuckets(s.mergeSnapshot(map[string]gossipBucket{
+		key: {
+			Counts:  map[string]int64{"node-a": 1},
+			Version: map[string]int64{"node-a": 1},
+			ResetAt: resetAt,
+		},
+	}))
+
+	before, err := os.Stat(walPathForNode(dir, nodeID))
+	if err != nil {
+		t.Fatalf("stat wal before maybePersistSnapshot: %v", err)
+	}
+	if before.Size() <= 0 {
+		t.Fatalf("expected non-empty wal before snapshot, got size=%d", before.Size())
+	}
+
+	// Not due yet.
+	s.maybePersistSnapshot()
+	if _, err := os.Stat(snapshotPathForNode(dir, nodeID)); !os.IsNotExist(err) {
+		t.Fatalf("snapshot should not exist before interval; stat err=%v", err)
+	}
+
+	vc.Advance(2 * time.Second)
+	s.maybePersistSnapshot()
+
+	if _, err := os.Stat(snapshotPathForNode(dir, nodeID)); err != nil {
+		t.Fatalf("snapshot should exist once interval elapses: %v", err)
+	}
+	after, err := os.Stat(walPathForNode(dir, nodeID))
+	if err != nil {
+		t.Fatalf("stat wal after maybePersistSnapshot: %v", err)
+	}
+	if after.Size() != 0 {
+		t.Fatalf("expected wal compaction after snapshot, got size=%d", after.Size())
+	}
+
+	wantNext := vc.Now().Add(2 * time.Second)
+	if !s.nextSnapshot.Equal(wantNext) {
+		t.Fatalf("nextSnapshot = %v, want %v", s.nextSnapshot, wantNext)
+	}
+}
+
+func TestCRDTStorage_Close_PersistsSnapshotAndReleasesLock_NoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	nodeID := "close-snapshot-node"
+
+	s := newCRDTStorageWithoutNetwork(nodeID)
+	s.stopCh = make(chan struct{})
+	s.doneCh = make(chan struct{})
+	close(s.doneCh)
+
+	if err := s.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("initPersistence() error = %v", err)
+	}
+
+	key, resetAt := s.bucketKey("close-snapshot", time.Hour, time.Now().UTC())
+	s.persistBuckets(s.mergeSnapshot(map[string]gossipBucket{
+		key: {
+			Counts:  map[string]int64{"node-a": 2},
+			Version: map[string]int64{"node-a": 2},
+			ResetAt: resetAt,
+		},
+	}))
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	if _, err := os.Stat(snapshotPathForNode(dir, nodeID)); err != nil {
+		t.Fatalf("snapshot file missing after Close(): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, sanitizePathComponent(nodeID)+".lock")); !os.IsNotExist(err) {
+		t.Fatalf("expected lock file removed on Close(), stat err=%v", err)
+	}
+
+	recovered := newCRDTStorageWithoutNetwork(nodeID)
+	if err := recovered.initPersistence(&CRDTConfig{
+		NodeID:           nodeID,
+		PersistDir:       dir,
+		SnapshotInterval: time.Second,
+	}); err != nil {
+		t.Fatalf("recovered initPersistence() error = %v", err)
+	}
+	defer closePersistenceResources(t, recovered)
+
+	if total := totalForBucket(recovered, key); total != 2 {
+		t.Fatalf("recovered total after Close() snapshot = %d, want 2", total)
+	}
+}
+
 func TestNormalizePeerURL(t *testing.T) {
 	if got := normalizePeerURL("127.0.0.1:8081"); !strings.HasPrefix(got, "http://") {
 		t.Fatalf("normalizePeerURL should add scheme, got %q", got)

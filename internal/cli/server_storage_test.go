@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/SmitUplenchwar2687/Chrono/internal/clock"
 	"github.com/SmitUplenchwar2687/Chrono/internal/config"
 	"github.com/SmitUplenchwar2687/Chrono/internal/limiter"
@@ -119,5 +121,67 @@ func TestStorageOptionsToConfig_CRDTPersistenceFields(t *testing.T) {
 	}
 	if cfg.CRDT.WALSyncInterval != 2*time.Second {
 		t.Fatalf("wal sync interval = %v, want 2s", cfg.CRDT.WALSyncInterval)
+	}
+}
+
+func TestStorageOptionsApplyConfigIfUnset_CRDTPersistenceFields(t *testing.T) {
+	opts := defaultStorageOptions()
+	cmd := &cobra.Command{Use: "test"}
+	opts.addFlags(cmd)
+
+	cfg := &config.StorageConfig{
+		CRDT: config.StorageCRDTConfig{
+			PersistDir:       "/cfg/chrono-crdt",
+			SnapshotInterval: 40 * time.Second,
+			WALSyncInterval:  3 * time.Second,
+		},
+	}
+
+	opts.applyConfigIfUnset(cmd, cfg)
+
+	if opts.crdtPersistDir != "/cfg/chrono-crdt" {
+		t.Fatalf("persist dir = %q, want /cfg/chrono-crdt", opts.crdtPersistDir)
+	}
+	if opts.crdtSnapshotInterval != 40*time.Second {
+		t.Fatalf("snapshot interval = %v, want 40s", opts.crdtSnapshotInterval)
+	}
+	if opts.crdtWALSyncInterval != 3*time.Second {
+		t.Fatalf("wal sync interval = %v, want 3s", opts.crdtWALSyncInterval)
+	}
+}
+
+func TestStorageOptionsApplyConfigIfUnset_CRDTPersistenceFlagsOverrideConfig(t *testing.T) {
+	opts := defaultStorageOptions()
+	cmd := &cobra.Command{Use: "test"}
+	opts.addFlags(cmd)
+
+	if err := cmd.Flags().Set("crdt-persist-dir", "/flag/chrono-crdt"); err != nil {
+		t.Fatalf("set crdt-persist-dir flag: %v", err)
+	}
+	if err := cmd.Flags().Set("crdt-snapshot-interval", "55s"); err != nil {
+		t.Fatalf("set crdt-snapshot-interval flag: %v", err)
+	}
+	if err := cmd.Flags().Set("crdt-wal-sync-interval", "4s"); err != nil {
+		t.Fatalf("set crdt-wal-sync-interval flag: %v", err)
+	}
+
+	cfg := &config.StorageConfig{
+		CRDT: config.StorageCRDTConfig{
+			PersistDir:       "/cfg/chrono-crdt",
+			SnapshotInterval: 40 * time.Second,
+			WALSyncInterval:  3 * time.Second,
+		},
+	}
+
+	opts.applyConfigIfUnset(cmd, cfg)
+
+	if opts.crdtPersistDir != "/flag/chrono-crdt" {
+		t.Fatalf("persist dir = %q, want /flag/chrono-crdt", opts.crdtPersistDir)
+	}
+	if opts.crdtSnapshotInterval != 55*time.Second {
+		t.Fatalf("snapshot interval = %v, want 55s", opts.crdtSnapshotInterval)
+	}
+	if opts.crdtWALSyncInterval != 4*time.Second {
+		t.Fatalf("wal sync interval = %v, want 4s", opts.crdtWALSyncInterval)
 	}
 }
